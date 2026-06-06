@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: counter-fork
+  annotations:
+    dev.neevcloud.restore-image-path: /poc/forkA
+spec:
+  runtimeClassName: gvisor
+  restartPolicy: Never
+  containers:
+    - name: counter
+      image: counter:poc
+      imagePullPolicy: Never
+      args: ["--balloon-mib=0", "--state-file=/state/counter.state"]
+      volumeMounts:
+        - name: state
+          mountPath: /state
+  volumes:
+    - name: state
+      hostPath:
+        path: /poc/stateB
+        type: DirectoryOrCreate

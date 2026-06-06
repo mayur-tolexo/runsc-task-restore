@@ -1,18 +1,12 @@
 # High-Level Design — runsc-task-restore
 
-## 1. Problem
+## 1. Goal
 
-We want **snapshot, restore, and fork** of gVisor-isolated Kubernetes pods
-(agent sandboxes), preserving in-memory process state — the E2B/Cloudflare-style
-capability. gVisor's `runsc` runtime already implements native checkpoint/
-restore of a sandbox, but no orchestration layer exposes it:
-
-- **kubelet** (`ContainerCheckpoint` CRI API) is hardwired to **CRIU** and has
-  **no restore verb**. CRIU cannot checkpoint a gVisor sandbox.
-- **containerd task API** (`ctr tasks checkpoint`) forwards to the runtime shim;
-  the runsc shim returns **`ErrNotImplemented`**.
-- **raw `runsc` CLI** works, but only for **single-container** sandboxes and
-  with no integration into pod lifecycle.
+**Snapshot, restore, and fork** gVisor-isolated Kubernetes pods (agent
+sandboxes) while preserving in-memory process state — the E2B/Cloudflare-style
+capability. gVisor's `runsc` runtime implements native, sandbox-wide checkpoint/
+restore, but no orchestration layer exposed it. This work wires it into the
+containerd shim so a normal pod create/start can fork a running pod.
 
 ## 2. Where the fix belongs
 
@@ -35,129 +29,136 @@ flowchart TD
     style kubelet fill:#f8d0d0,stroke:#c0392b
 ```
 
-The **shim** is the correct insertion point:
+Why the shim (not kubelet or containerd-core):
 
 - It is gVisor's own adapter between containerd and `runsc`.
 - It already knows the pod ↔ container topology (CRI annotations:
   `container-type`, `sandbox-id`, `container-name`).
-- The `runsc` checkpoint/restore primitive underneath already works — only the
-  shim wiring is missing.
-- kubelet and containerd-core need **no changes**.
+- The `runsc` checkpoint/restore primitive underneath already works.
+- kubelet (`ContainerCheckpoint` is CRIU-only, no restore verb) and
+  containerd-core need **no changes**.
 
-## 3. What already existed vs. what we added
-
-The gVisor shim (`pkg/shim/v1`) already had a **`Restore`** path
-(`extension.RestoreRequest{ImagePath}` → `Container.Restore` → `Init.start`
-with a `RestoreConfig` → `runsc restore`). It was unreachable over stock
-containerd (the task API has no `Restore` RPC; it's wired for gVisor's own
-containerd integration). **Only `Checkpoint` was missing.**
-
-| Component | Before | After (this POC) |
-|---|---|---|
-| `runsccmd.Runsc.Checkpoint` | absent | added — `runsc checkpoint --image-path … --leave-running` |
-| `proc.Init.Checkpoint` | absent | added — locks + calls runtime |
-| `runsc.Container.Checkpoint` | absent | added — uses `CheckpointTaskRequest.Path` |
-| `runscService.Checkpoint` | `ErrNotImplemented` | implemented — looks up container, checkpoints |
-| `runscService.Start` | cold start only | restore when restore annotations select the container |
-
-## 4. Components and data flow
-
-```mermaid
-flowchart LR
-    subgraph shimpkg["pkg/shim/v1"]
-      svc["runsc/service.go\nCheckpoint() / Start()"]
-      cont["runsc/container.go\nContainer.Checkpoint()"]
-      init["proc/init.go\nInit.Checkpoint()"]
-      cmd["runsccmd/runsc.go\nRunsc.Checkpoint() + CheckpointOpts"]
-    end
-    svc --> cont --> init --> cmd --> RUNSC[["runsc checkpoint / restore"]]
-```
-
-- **Checkpoint path:** `Checkpoint(CheckpointTaskRequest{ID, Path})` →
-  `getContainer(ID)` → `Container.Checkpoint` → `Init.Checkpoint` →
-  `Runsc.Checkpoint(id, {ImagePath: Path, LeaveRunning: true})`.
-- **Restore path (annotation):** `Start` reads the container OCI spec; if
-  `dev.neevcloud.restore-image-path` is set and this container is the named
-  app container (`dev.neevcloud.restore-container`, never the sandbox/root), it
-  calls the pre-existing `Container.Restore` with that image path.
-
-## 5. Annotation contract
-
-Pod-wide annotations reach every container's OCI spec via containerd runtime
-passthrough (`pod_annotations = ["dev.neevcloud.*"]`). To avoid restoring the
-`pause` and sidecar containers from the app's checkpoint, the shim restores a
-container only when:
-
-1. `dev.neevcloud.restore-image-path` is non-empty, **and**
-2. the container is **not** the sandbox/root (`utils.IsSandbox` is false), **and**
-3. its `io.kubernetes.cri.container-name` matches
-   `dev.neevcloud.restore-container`.
-
-## 6. The pod-fork invariant (why app-only restore is not enough)
-
-A Kubernetes pod on gVisor is one sentry hosting multiple containers:
+## 3. Pod = a multi-container gVisor sandbox
 
 ```mermaid
 flowchart TD
-    subgraph sandbox["gVisor sandbox (one sentry)"]
-      pause["pause — sandbox/root container"]
+    subgraph sandbox["one gVisor sandbox (one sentry)"]
+      pause["pause — root / sandbox container"]
       agent["agent — app sub-container"]
-      sandboxd["sandboxd — sidecar sub-container"]
+      side["sidecars — sub-containers"]
     end
     pause -. owns .-> agent
-    pause -. owns .-> sandboxd
+    pause -. owns .-> side
 ```
 
-Restoring only the `agent` sub-container into a **freshly-started** sandbox is
-rejected by gVisor:
+Consequences that shape the design:
 
+- **Checkpoint is sandbox-wide.** `runsc checkpoint <any-id>` serializes the
+  entire sentry (all containers) and records the **container count** + each
+  container's spec in the image metadata
+  (`runsc/boot/restore.go`: `ContainerCountKey`, `ContainerSpecsKey`).
+- **Restore is a whole-sandbox unit.** gVisor refuses to restore a sub-container
+  into a cold-started sandbox (`cannot restore subcontainer: sandbox is not
+  being restored`). The sandbox root must be restored first.
+
+## 4. The restore state machine (runsc internals)
+
+```mermaid
+stateDiagram-v2
+    [*] --> created
+    created --> restoringUnstarted: runsc restore <root>\n(Sandbox.Restore)
+    restoringUnstarted --> restoringUnstarted: runsc restore <sub>\n(RestoreSubcontainer)
+    restoringUnstarted --> restored: restored count == container_count\n(onRestoreDone → kernel resumes)
+    restored --> [*]
 ```
-cannot restore subcontainer: sandbox is not being restored, state=started
+
+- Restoring the **root** sets `state = restoringUnstarted` and reads
+  `totalContainers` from the checkpoint metadata
+  (`runsc/boot/controller.go`).
+- Each **sub-container** restore must observe `restoringUnstarted` or it errors
+  out; it adds the container, and when `len(restored) == totalContainers` the
+  loader resumes the whole kernel.
+
+## 5. Container ID remap by name (why fork works)
+
+The source pod and the forked pod have **different** container IDs. On restore,
+gVisor walks every restored task and remaps its checkpoint container ID to the
+new pod's ID **by container name** (`runsc/boot/restore.go`):
+
+```go
+name  := l.k.ContainerName(oldCid)        // from io.kubernetes.cri.container-name
+newCid := l.containerIDs[name]            // name -> new CID (registered per restore call)
+task.RestoreContainerID(newCid)
+l.k.RestoreContainerMapping(l.containerIDs)
 ```
 
-gVisor requires the **sandbox itself to be under restore** before any
-sub-container can be restored into it. Checkpoint/restore is a **whole-sandbox**
-operation.
+Kubernetes reuses the same container names across pods (`pause`, `counter`, …),
+so the names line up and no rewriting is needed. For the rename case gVisor also
+honors `dev.gvisor.container-name-remap.<id>: "<from>=<to>"`
+(`runsc/specutils/specutils.go`).
 
-## 7. Next layer — whole-sandbox restore (for true pod fork)
+## 6. What the shim change does
 
-To fork a pod end to end, the design extends to the containerd **Sandbox**
-service (`CreateSandbox`/`StartSandbox`), which the shim also serves:
+The shim (`pkg/shim/v1`) registers the standard containerd Task service; CRI
+creates the pause/root and every sub-container through the task `Create`/`Start`
+methods (the runsc shim does not implement the sandbox API, so the legacy
+task-based pod-sandbox path is used). The changes:
+
+| Component | Change |
+|---|---|
+| `runsccmd.Runsc.Checkpoint` + `CheckpointOpts` | new — `runsc checkpoint --image-path … --leave-running` |
+| `proc.Init.Checkpoint` | new — calls the runtime without holding `p.mu` across the exec |
+| `runsc.Container.Checkpoint` | new — guards `task == nil`, image path from `CheckpointTaskRequest.Path` |
+| `runscService.Checkpoint` | implemented (was `ErrNotImplemented`) |
+| `runscService.Start` | restores from the whole-sandbox image when `dev.neevcloud.restore-image-path` is on the container spec — for the root **and** sub-containers |
+
+`Start` reads the container's OCI spec; if the restore annotation is present it
+calls the pre-existing `Container.Restore` (→ `Init.start` with a
+`RestoreConfig` → `runsc restore --detach`) instead of cold start. The pause
+container is started first by CRI, so the root is restored before the
+sub-containers — matching the state machine in §4. The annotation is pod-wide
+(containerd `pod_annotations` passthrough), so every container restores from the
+same image.
+
+## 7. End-to-end fork flow
 
 ```mermaid
 sequenceDiagram
-    participant Ctl as Fork controller
-    participant CD as containerd
-    participant Shim as runsc shim
-    participant RS as runsc
-    Note over Ctl: snapshot source pod
-    Ctl->>CD: checkpoint sandbox (pause id) + each sub-container
-    CD->>Shim: Checkpoint(...)
-    Shim->>RS: runsc checkpoint --leave-running (whole sentry)
-    Note over Ctl: fork → new pod
-    Ctl->>CD: create sandbox FROM checkpoint (restore)
-    CD->>Shim: StartSandbox(restore-image)
-    Shim->>RS: runsc restore (sandbox/root)
-    Ctl->>CD: start sub-containers FROM checkpoint
-    CD->>Shim: Start(restore annotations)
-    Shim->>RS: runsc restore (sub-containers into the restoring sandbox)
-    RS-->>Ctl: pod resumes with preserved memory
+    autonumber
+    participant Ctl as operator / controller
+    participant CD as containerd (CRI)
+    participant Shim as runsc shim (patched)
+    participant RS as runsc / sentry
+
+    Note over Ctl,RS: snapshot the source pod
+    Ctl->>CD: ctr tasks checkpoint <any container in pod A>
+    CD->>Shim: Checkpoint(Path=/img)
+    Shim->>RS: runsc checkpoint --leave-running --image-path=/img
+    RS-->>Ctl: whole-sandbox image (metadata: container_count, specs); pod A keeps running
+
+    Note over Ctl,RS: fork → new pod B (annotation: restore-image-path=/img)
+    CD->>Shim: Start(pause@B)
+    Shim->>RS: runsc restore <pause@B>  → state=restoringUnstarted, totalContainers=N
+    CD->>Shim: Start(app@B)
+    Shim->>RS: runsc restore <app@B>    → RestoreSubcontainer; count==N → resume
+    RS-->>Ctl: pod B running with pod A's memory (same UUID), then diverges
 ```
 
-Required work beyond this POC:
+## 8. Operational requirements
 
-- A **restore variant of `StartSandbox`** so the pod's `pause`/sandbox is created
-  via `runsc restore` (not started cold).
-- **Identity regeneration** on restore: rewrite `linux.cgroupsPath` to the new
-  pod's kubelet slice and point `io.kubernetes.cri.sandbox-id` at the new
-  sandbox (the two things that broke hand-rolled raw-`runsc` restores).
-- A **fork controller** (or the agent-sandbox controller) to: checkpoint the
-  whole source sandbox, store the images, and stamp the new pod's CR/annotations
-  so containerd drives the coordinated sandbox+sub-container restore.
+- containerd runtime config must pass the annotation through to the OCI spec:
+  `pod_annotations = ["dev.neevcloud.*"]` on the `runsc` runtime.
+- `systrap` platform (works without nested virtualization).
+- The checkpoint image must be reachable on the node where the forked pod is
+  scheduled (local path in this POC; an object-store fetch in production).
 
-## 8. Scope and non-goals
+## 9. Productionization notes (beyond this POC)
 
-- In scope: shim `Checkpoint` implementation; annotation-driven restore trigger;
-  empirical mapping of what works and what gVisor forbids.
-- Out of scope (documented, not built): whole-sandbox restore via the Sandbox
-  service; the fork controller; cross-node restore; storage/GC of images.
+- A **fork controller** (or the agent-sandbox controller): on `snapshot`,
+  `ctr tasks checkpoint` the source pod and store the image; on `fork`, stamp
+  the new pod's CR/annotations with the image path so containerd drives the
+  coordinated restore.
+- Honor `CheckpointTaskRequest.Options` (`--exit`) instead of always
+  `--leave-running`.
+- Re-establish cgroup/OOM notifications on restore (upstream TODO).
+- Cross-node fork: ship the image; snapshot storage, retention, and GC.

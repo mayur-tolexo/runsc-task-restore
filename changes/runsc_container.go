@@ -407,13 +407,15 @@ func (c *Container) Restore(ctx context.Context, r *extension.RestoreRequest) (e
 }
 
 // Checkpoint saves the running container's state to r.Path. The container is
-// left running so the source survives the snapshot (fork semantics).
+// always left running so the source survives the snapshot (fork semantics);
+// the request's Options (e.g. the runc --exit flag) are intentionally not
+// honored in this implementation.
 func (c *Container) Checkpoint(ctx context.Context, r *task.CheckpointTaskRequest) error {
-	p, err := c.Process("")
-	if err != nil {
-		return err
+	if c.task == nil {
+		log.L.Debugf("Checkpoint error, id: %s: container not created", r.ID)
+		return fmt.Errorf("container must be created")
 	}
-	return p.(*proc.Init).Checkpoint(ctx, &runsccmd.CheckpointOpts{
+	return c.task.Checkpoint(ctx, &runsccmd.CheckpointOpts{
 		ImagePath:    r.Path,
 		LeaveRunning: true,
 	})

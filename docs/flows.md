@@ -17,7 +17,7 @@ flowchart TD
     I -->|before| J["ErrNotImplemented ❌"]
     I -->|after this POC| K["runsc checkpoint ✅"]
 
-    L["runsc checkpoint (CLI)"] --> M["gVisor native S/R ✅ single-container only"]
+    L["runsc checkpoint (CLI)"] --> M["gVisor native S/R ✅"]
 
     style J fill:#f8d0d0,stroke:#c0392b
     style F fill:#f8d0d0,stroke:#c0392b
@@ -26,7 +26,7 @@ flowchart TD
     style M fill:#cce7cc,stroke:#2e8b2e
 ```
 
-## 2. Checkpoint flow (implemented)
+## 2. Checkpoint flow (sandbox-wide)
 
 ```mermaid
 sequenceDiagram
@@ -35,108 +35,96 @@ sequenceDiagram
     participant CD as containerd
     participant Shim as runsc shim (patched)
     participant RS as runsc
-    participant GV as gVisor sentry
+    participant GV as gVisor sentry (whole pod)
 
-    Client->>CD: tasks checkpoint --image-path P <ctr>
+    Client->>CD: tasks checkpoint --image-path P <any container in pod>
     CD->>Shim: Checkpoint(CheckpointTaskRequest{ID, Path=P})
-    Shim->>Shim: getContainer(ID) → Container.Checkpoint
+    Shim->>Shim: getContainer(ID) → Container.Checkpoint (task != nil)
     Shim->>RS: runsc checkpoint --image-path=P --leave-running ID
-    RS->>GV: serialize sentry state → checkpoint.img / pages.img
-    GV-->>RS: done (container left running)
-    RS-->>Shim: exit 0
-    Shim-->>CD: Empty
-    CD-->>Client: ok ; pod stays Running
+    RS->>GV: serialize entire sentry (all containers)
+    GV-->>RS: checkpoint.img / pages.img + metadata{container_count, specs}
+    RS-->>Shim: exit 0 (containers left running)
+    Shim-->>Client: ok ; source pod stays Running
 ```
 
-## 3. Restore trigger flow (implemented)
+## 3. Whole-sandbox restore — the state machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> created
+    created --> restoringUnstarted: Start(pause) → runsc restore root\n(Sandbox.Restore; reads container_count)
+    restoringUnstarted --> restoringUnstarted: Start(sub) → runsc restore\n(RestoreSubcontainer)
+    restoringUnstarted --> restored: restored == container_count\n→ kernel resumes
+    restored --> [*]
+```
+
+## 4. Working pod fork — end to end
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant K as kubelet
-    participant CD as containerd
+    participant Op as operator
+    participant CD as containerd (CRI)
     participant Shim as runsc shim (patched)
-    participant RS as runsc
+    participant RS as runsc / sentry
 
-    K->>CD: RunPodSandbox (new pod)
-    CD->>Shim: CreateSandbox / StartSandbox  (pause starts cold)
-    K->>CD: CreateContainer(app) + StartContainer(app)
-    CD->>Shim: Start(StartRequest{ID})
-    Shim->>Shim: ReadSpec(bundle) → shouldRestore(spec)?
-    alt restore-image-path set AND not sandbox AND container-name matches
-        Shim->>RS: runsc restore --image-path=… --detach ID
-    else
-        Shim->>RS: runsc start ID  (cold)
-    end
-```
-
-## 4. Pod fork attempt — and where gVisor blocks it
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant Ctl as operator
-    participant PodA as Pod A (source)
-    participant CD as containerd
-    participant Shim as runsc shim
-    participant RS as runsc
-
-    Ctl->>PodA: run counter (uuid=A, counter climbs)
-    Ctl->>CD: ctr tasks checkpoint agent@PodA → /poc/forkA
+    Note over Op,RS: source pod A (uuid=A, counter climbing)
+    Op->>CD: ctr tasks checkpoint agent@A → /img
     CD->>Shim: Checkpoint
     Shim->>RS: runsc checkpoint --leave-running
-    RS-->>Ctl: image written ✅ (Pod A still running)
+    RS-->>Op: image (container_count=N) ; pod A keeps running ✅
 
-    Ctl->>CD: create Pod B with restore annotations → /poc/forkA
-    CD->>Shim: StartSandbox (Pod B pause starts COLD)
-    CD->>Shim: Start(agent@PodB)
-    Shim->>RS: runsc restore --image-path=/poc/forkA agent@PodB
-    RS-->>Shim: ❌ "cannot restore subcontainer:\n sandbox is not being restored, state=started"
-    Shim-->>CD: StartError
+    Note over Op,RS: fork → pod B  (annotation restore-image-path=/img on the pod)
+    CD->>Shim: Start(pause@B)
+    Shim->>RS: runsc restore pause@B  → restoringUnstarted, total=N
+    CD->>Shim: Start(agent@B)
+    Shim->>RS: runsc restore agent@B  → RestoreSubcontainer ; count==N → resume
+    Note over RS: remap checkpoint CIDs → B's CIDs by container NAME
+    RS-->>Op: pod B Running, uuid=A, counter continues, then diverges ✅
 ```
 
-The sandbox (Pod B's `pause`) was started cold, so gVisor refuses to restore the
-sub-container into it.
-
-## 5. The fix for fork — whole-sandbox restore (next layer)
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant Ctl as fork controller
-    participant CD as containerd
-    participant Shim as runsc shim
-    participant RS as runsc
-
-    rect rgb(235,245,235)
-    Note over Ctl,RS: snapshot — whole sandbox
-    Ctl->>CD: checkpoint sandbox (pause) + sub-containers
-    CD->>Shim: Checkpoint(...)
-    Shim->>RS: runsc checkpoint --leave-running (entire sentry)
-    end
-
-    rect rgb(235,240,250)
-    Note over Ctl,RS: fork — restore sandbox first, then children
-    Ctl->>CD: create Pod B sandbox FROM checkpoint
-    CD->>Shim: StartSandbox(restore-image)  ← NEW restore variant
-    Shim->>RS: runsc restore (sandbox/root)
-    Ctl->>CD: start sub-containers FROM checkpoint
-    CD->>Shim: Start(restore annotations)
-    Shim->>RS: runsc restore (sub-containers into restoring sandbox)
-    RS-->>Ctl: Pod B resumes with Pod A's memory (uuid=A)
-    end
-```
-
-## 6. Component map
+## 5. One-to-many fork
 
 ```mermaid
 flowchart LR
-    subgraph repo["this repo (patch targets in gVisor pkg/shim/v1)"]
-      direction TB
-      svc["runsc/service.go\n• Checkpoint()\n• Start() + shouldRestore()"]
-      cont["runsc/container.go\n• Container.Checkpoint()"]
-      init["proc/init.go\n• Init.Checkpoint()"]
-      cmd["runsccmd/runsc.go\n• CheckpointOpts\n• Runsc.Checkpoint()"]
+    A["pod A (source)\nuuid=A counter=50"] -->|ctr checkpoint| IMG[("whole-sandbox image\ncontainer_count=N")]
+    IMG -->|restore| B["pod B (fork)\nuuid=A counter=41"]
+    IMG -->|restore| C["pod C (fork)\nuuid=A counter=16"]
+    IMG -->|restore| D["pod … (fork)"]
+    style IMG fill:#ffe9b3,stroke:#d98c00
+    style A fill:#cce7cc,stroke:#2e8b2e
+    style B fill:#cce7cc,stroke:#2e8b2e
+    style C fill:#cce7cc,stroke:#2e8b2e
+```
+
+All forks share the source's captured memory (same `uuid`/`start`) and then run
+independently (diverging counters).
+
+## 6. Container ID remap by name
+
+```mermaid
+flowchart TD
+    subgraph ckpt["checkpoint (pod A)"]
+      ca["task CID=agentA\nname=counter"]
+      cp["task CID=pauseA\nname=__no_name_0"]
     end
+    subgraph restore["restore (pod B)"]
+      direction TB
+      map["l.containerIDs:\n counter → agentB\n __no_name_0 → pauseB"]
+    end
+    ca -->|"ContainerName(oldCid)=counter"| map
+    cp -->|"name=__no_name_0"| map
+    map -->|RestoreContainerMapping| done["tasks now run under pod B's CIDs"]
+    style map fill:#ffe9b3,stroke:#d98c00
+```
+
+## 7. Component map (patch targets in gVisor pkg/shim/v1)
+
+```mermaid
+flowchart LR
+    svc["runsc/service.go\n• Checkpoint()\n• Start() + shouldRestore()"]
+    cont["runsc/container.go\n• Container.Checkpoint()"]
+    init["proc/init.go\n• Init.Checkpoint()"]
+    cmd["runsccmd/runsc.go\n• CheckpointOpts\n• Runsc.Checkpoint()"]
     svc --> cont --> init --> cmd --> runsc[["runsc binary"]]
 ```

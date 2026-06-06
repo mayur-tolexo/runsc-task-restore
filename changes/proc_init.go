@@ -276,10 +276,13 @@ func (p *Init) Restore(ctx context.Context, conf *extension.RestoreConfig) error
 }
 
 // Checkpoint saves the running container's state via the runsc runtime.
+//
+// p.mu is deliberately not held across the runsc checkpoint exec: id and
+// runtime are immutable after construction, and the call blocks for the
+// duration of the image write. Holding p.mu here would block the exit-handling
+// path (KillAll/SetExited also take p.mu) if the sandbox exits during the
+// checkpoint, stalling shim-wide exit processing.
 func (p *Init) Checkpoint(ctx context.Context, opts *runsccmd.CheckpointOpts) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	return p.runtime.Checkpoint(ctx, p.id, opts)
 }
 

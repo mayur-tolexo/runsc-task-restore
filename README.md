@@ -1,70 +1,101 @@
 # runsc-task-restore
 
-A POC that makes **gVisor (runsc) checkpoint/restore reachable from containerd**
-for Kubernetes pods, by patching the `containerd-shim-runsc-v1` shim.
+**Working pod-level checkpoint, restore, and fork for gVisor (runsc) sandboxes on
+Kubernetes**, by patching the `containerd-shim-runsc-v1` shim.
 
 gVisor's `runsc` runtime can checkpoint and restore a sandbox, but that power is
 not exposed through the normal orchestration stack: `kubectl`/kubelet only offer
 a CRIU-based checkpoint (which cannot snapshot a gVisor sandbox), and the runsc
 containerd shim returns `ErrNotImplemented` for the task `Checkpoint` RPC. This
-repo closes that gap at the **shim** layer — the architecturally correct place —
-and documents exactly how far pod-level snapshot/fork can go and where gVisor's
-own invariants stop it.
+repo closes the gap at the **shim** layer and demonstrates **forking a running
+Kubernetes pod** — snapshotting one pod and booting N new pods that resume its
+exact in-memory state.
 
 ## What this changes
 
-Two small, self-contained changes to `pkg/shim/v1` (see
+Self-contained changes to `pkg/shim/v1` (see
 [`patches/`](patches/0001-shim-task-checkpoint-and-annotation-restore.patch) and
 [`changes/`](changes/)):
 
-1. **Implement the shim `Checkpoint` task method.** Mirrors the existing
-   `Restore` wiring to shell out to `runsc checkpoint --leave-running`, so
-   `ctr tasks checkpoint` (and any containerd client) drives gVisor's native
-   checkpoint instead of failing with `not implemented`.
-2. **Annotation-triggered restore.** The shim's `Restore` path already exists
-   but isn't reachable over stock containerd. A new annotation
-   (`dev.neevcloud.restore-image-path`, scoped to one container via
-   `dev.neevcloud.restore-container`) makes a normal `Start` route into the
-   existing restore path — so a *forked pod* can boot its app container from a
-   checkpoint image.
+1. **Implement the shim `Checkpoint` task method** (was `ErrNotImplemented`).
+   Shells out to `runsc checkpoint --leave-running`, so `ctr tasks checkpoint`
+   (and any containerd client) drives gVisor's native, sandbox-wide checkpoint
+   while the source pod keeps running.
+2. **Whole-sandbox annotation-triggered restore.** A pod-wide annotation
+   (`dev.neevcloud.restore-image-path`) makes a normal `Start` route into
+   gVisor's existing restore path for **every** container in the pod — the
+   `pause` root first (`runsc restore` → sentry enters the restoring state),
+   then each sub-container (`RestoreSubcontainer`). The sentry resumes once
+   `container_count` (recorded in the checkpoint metadata) containers are
+   restored.
 
-## Status (verified on a kind cluster, arm64)
+gVisor remaps checkpoint container IDs to the new pod's IDs **by container
+name**; Kubernetes reuses the same container names across pods, so a fork needs
+no ID rewriting.
+
+## Status — verified end-to-end on a kind cluster (arm64)
 
 | Capability | Result |
 |---|---|
 | Build patched shim (Bazel) | ✅ `containerd-shim-runsc-v1`, linux/arm64 |
-| `ctr tasks checkpoint` on a gVisor pod | ✅ **works** (was `not implemented`); pod stays running |
-| Annotation-triggered restore reaches gVisor | ✅ shim routes `Start` → `runsc restore` |
-| Fork a *new pod* from an app-container checkpoint | ⛔ blocked by gVisor invariant: `cannot restore subcontainer: sandbox is not being restored` |
+| `ctr tasks checkpoint` on a gVisor pod | ✅ works (was `not implemented`); pod stays running |
+| Restore a whole pod sandbox from a checkpoint | ✅ root + sub-containers restored as a unit |
+| **Fork a new pod** from a checkpoint | ✅ new pod boots with the source's exact memory |
+| **One-to-many fork** | ✅ N pods from one checkpoint, each independent |
 
-**Key finding:** a Kubernetes pod is a *multi-container* gVisor sandbox
-(`pause` + app + sidecars). gVisor will not restore a sub-container into a
-freshly-started sandbox — the **whole sandbox must be restored as a unit**. So
-true pod fork requires restoring the pod *sandbox* (pause) from a checkpoint and
-then restoring each sub-container together. That next layer (the containerd
-Sandbox service restore path) is described in [docs/HLD.md](docs/HLD.md).
+**Demonstrated fork:** a source pod's counter process (random startup UUID +
+incrementing counter) was checkpointed; two new pods were created from that
+checkpoint and came up reporting the **same UUID and continuing the counter**,
+then diverged independently:
+
+| Pod | UUID | Counter | Role |
+|---|---|---|---|
+| `counter` | `a1cc1aa8…` | 50 | source (kept running) |
+| `counter-fork` | `a1cc1aa8…` | 41 | fork — independent |
+| `counter-fork2` | `a1cc1aa8…` | 16 | fork — independent |
+
+See [VERIFICATION.md](VERIFICATION.md) for the full run.
+
+## How it works (one paragraph)
+
+A Kubernetes pod is a single gVisor sandbox hosting the `pause` (root) container
+plus the app/sidecar sub-containers. `runsc checkpoint` is sandbox-wide and
+records the container count. To fork, the new pod is created normally but every
+container carries the restore annotation: the shim runs `runsc restore` instead
+of cold start. gVisor's loader rebuilds the sentry from the image, **remaps the
+checkpointed container IDs to the new pod's IDs by container name**, and resumes
+once all containers are restored. Full design in [docs/HLD.md](docs/HLD.md);
+diagrams in [docs/flows.md](docs/flows.md).
 
 ## Layout
 
-- [`docs/HLD.md`](docs/HLD.md) — high-level design: layers, where the fix goes, components, the whole-sandbox restore plan.
-- [`docs/flows.md`](docs/flows.md) — flow + sequence diagrams (checkpoint, restore, pod-fork, the blocking invariant).
+- [`docs/HLD.md`](docs/HLD.md) — high-level design: layers, where the fix goes, the whole-sandbox restore state machine, ID-remap-by-name.
+- [`docs/flows.md`](docs/flows.md) — flow + sequence diagrams (checkpoint, whole-sandbox restore, working pod fork, one-to-many).
 - [`patches/`](patches/) — the diff against upstream gVisor.
 - [`changes/`](changes/) — the four modified shim files, for reading.
-- [`scripts/`](scripts/) — build, install, and verify scripts.
-- [`VERIFICATION.md`](VERIFICATION.md) — the empirical run with real command output.
+- [`examples/`](examples/) — source and fork pod manifests.
+- [`scripts/`](scripts/) — build, install, verify-checkpoint, verify-fork.
+- [`VERIFICATION.md`](VERIFICATION.md) — the empirical end-to-end run with real output.
 
 ## Quick start
 
 ```sh
-# build the patched shim (needs the gVisor source + its Bazel/Docker flow)
-scripts/build.sh /path/to/gvisor
-
-# install into a node running containerd + gVisor
-scripts/install.sh <node-container-or-host>
-
-# verify checkpoint via containerd
-scripts/verify-checkpoint.sh
+scripts/build.sh   /path/to/gvisor        # build the patched shim (Bazel-in-Docker)
+scripts/install.sh <node-container>       # install + enable annotation passthrough + restart containerd
+scripts/verify-fork.sh <node-container>   # checkpoint a pod, fork two new pods, show same UUID
 ```
 
 Built and verified against gVisor `release-20260601.0`, containerd v2.2.0,
 Kubernetes v1.35 (kind), on linux/arm64.
+
+## Limitations / next steps
+
+- `Checkpoint` always uses `--leave-running` and ignores the request's `Options`
+  (no `--exit`) — a deliberate fork-oriented default.
+- Restore does not re-establish cgroup/OOM notifications (same TODO as the
+  upstream cold-start path).
+- Container **names** must match between source and forked pods (true for normal
+  Kubernetes pods); gVisor's `dev.gvisor.container-name-remap.*` annotation
+  handles the rename case if ever needed.
+- Cross-node fork (shipping the image to another node) and snapshot
+  storage/GC are out of scope for this POC.

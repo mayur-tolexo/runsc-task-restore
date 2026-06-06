@@ -1,16 +1,19 @@
 diff --git a/pkg/shim/v1/proc/init.go b/pkg/shim/v1/proc/init.go
-index a3ac694..7270772 100644
+index a3ac694..4e50914 100644
 --- a/pkg/shim/v1/proc/init.go
 +++ b/pkg/shim/v1/proc/init.go
-@@ -275,6 +275,14 @@ func (p *Init) Restore(ctx context.Context, conf *extension.RestoreConfig) error
+@@ -275,6 +275,17 @@ func (p *Init) Restore(ctx context.Context, conf *extension.RestoreConfig) error
  	return p.initState.Start(ctx, conf)
  }
  
 +// Checkpoint saves the running container's state via the runsc runtime.
++//
++// p.mu is deliberately not held across the runsc checkpoint exec: id and
++// runtime are immutable after construction, and the call blocks for the
++// duration of the image write. Holding p.mu here would block the exit-handling
++// path (KillAll/SetExited also take p.mu) if the sandbox exits during the
++// checkpoint, stalling shim-wide exit processing.
 +func (p *Init) Checkpoint(ctx context.Context, opts *runsccmd.CheckpointOpts) error {
-+	p.mu.Lock()
-+	defer p.mu.Unlock()
-+
 +	return p.runtime.Checkpoint(ctx, p.id, opts)
 +}
 +
@@ -18,21 +21,23 @@ index a3ac694..7270772 100644
  func (p *Init) SetExited(status int) {
  	p.mu.Lock()
 diff --git a/pkg/shim/v1/runsc/container.go b/pkg/shim/v1/runsc/container.go
-index fb0229d..fd006e6 100644
+index fb0229d..e7678b8 100644
 --- a/pkg/shim/v1/runsc/container.go
 +++ b/pkg/shim/v1/runsc/container.go
-@@ -406,6 +406,19 @@ func (c *Container) Restore(ctx context.Context, r *extension.RestoreRequest) (e
+@@ -406,6 +406,21 @@ func (c *Container) Restore(ctx context.Context, r *extension.RestoreRequest) (e
  	return p, nil
  }
  
 +// Checkpoint saves the running container's state to r.Path. The container is
-+// left running so the source survives the snapshot (fork semantics).
++// always left running so the source survives the snapshot (fork semantics);
++// the request's Options (e.g. the runc --exit flag) are intentionally not
++// honored in this implementation.
 +func (c *Container) Checkpoint(ctx context.Context, r *task.CheckpointTaskRequest) error {
-+	p, err := c.Process("")
-+	if err != nil {
-+		return err
++	if c.task == nil {
++		log.L.Debugf("Checkpoint error, id: %s: container not created", r.ID)
++		return fmt.Errorf("container must be created")
 +	}
-+	return p.(*proc.Init).Checkpoint(ctx, &runsccmd.CheckpointOpts{
++	return c.task.Checkpoint(ctx, &runsccmd.CheckpointOpts{
 +		ImagePath:    r.Path,
 +		LeaveRunning: true,
 +	})
@@ -42,78 +47,71 @@ index fb0229d..fd006e6 100644
  func (c *Container) Stats(ctx context.Context) (*task.StatsResponse, error) {
  	p, err := c.Process("")
 diff --git a/pkg/shim/v1/runsc/service.go b/pkg/shim/v1/runsc/service.go
-index 74bbf3a..09973e7 100644
+index 74bbf3a..b6e226e 100644
 --- a/pkg/shim/v1/runsc/service.go
 +++ b/pkg/shim/v1/runsc/service.go
-@@ -235,12 +235,66 @@ func (s *runscService) CreateWithFSRestore(ctx context.Context, rfs *extension.C
+@@ -235,12 +235,59 @@ func (s *runscService) CreateWithFSRestore(ctx context.Context, rfs *extension.C
  	}, nil
  }
  
 -// Start starts the container.
-+const (
-+	// restoreImagePathAnnotation, when present on a container's OCI spec,
-+	// makes Start restore the container's memory state from the named
-+	// checkpoint image instead of starting it cold. This makes gVisor's
-+	// existing restore path reachable through a normal containerd
-+	// create/start (e.g. a forked pod).
-+	restoreImagePathAnnotation = "dev.neevcloud.restore-image-path"
-+	// restoreContainerAnnotation names the single container in the pod that
-+	// should be restored. Other containers (pause, sidecars) start cold even
-+	// though the pod-wide annotation reaches their specs too.
-+	restoreContainerAnnotation = "dev.neevcloud.restore-container"
-+	// criContainerNameAnnotation is the CRI annotation carrying the
-+	// container's name within the pod.
-+	criContainerNameAnnotation = "io.kubernetes.cri.container-name"
-+)
++// restoreImagePathAnnotation, when present on a container's OCI spec, makes
++// Start restore the container from the named whole-sandbox checkpoint image
++// instead of starting it cold. A Kubernetes pod is one gVisor sandbox holding
++// the pause (root) container plus the app/sidecar sub-containers; gVisor
++// restores a sandbox as a unit, so every container in the forked pod carries
++// this (pod-wide) annotation and is restored from the same image. The pause
++// container is started first and runs runsc restore on the root, putting the
++// sentry into the restoring state; each sub-container then restores into it,
++// and the sentry resumes once container_count containers have been restored.
++//
++// Container names must match between the source and forked pods (gVisor remaps
++// checkpoint container IDs to the new IDs by name); Kubernetes reuses the same
++// container names across pods, so no remap is required.
++const restoreImagePathAnnotation = "dev.neevcloud.restore-image-path"
 +
-+// shouldRestore reports the checkpoint image path if this container is the
-+// restore target, or "" if it should start cold. Only the named app container
-+// (never the sandbox/root) is restored, so the pod-wide annotation does not
-+// wrongly trigger restores of the pause or sidecar containers.
++// shouldRestore reports the whole-sandbox checkpoint image path for this
++// container, or "" if it should start cold.
 +func shouldRestore(spec *specs.Spec) string {
-+	imagePath := spec.Annotations[restoreImagePathAnnotation]
-+	if imagePath == "" || utils.IsSandbox(spec) {
-+		return ""
-+	}
-+	if target := spec.Annotations[restoreContainerAnnotation]; target != "" {
-+		if spec.Annotations[criContainerNameAnnotation] != target {
-+			return ""
-+		}
-+	}
-+	return imagePath
++	return spec.Annotations[restoreImagePathAnnotation]
 +}
 +
-+// Start starts the container. If the container's spec selects it for restore
-+// (see shouldRestore), it is restored from the checkpoint image rather than
-+// started cold.
++// Start starts the container. If the container's spec carries
++// restoreImagePathAnnotation, it is restored from that whole-sandbox checkpoint
++// image rather than started cold.
  func (s *runscService) Start(ctx context.Context, r *task.StartRequest) (*task.StartResponse, error) {
  	c, err := s.getContainer(r.ID)
  	if err != nil {
  		return nil, err
  	}
 +
-+	// Route to the restore path when this container is the restore target.
++	// Route the init process to the restore path when its spec selects a
++	// whole-sandbox checkpoint image. Exec processes (r.ExecID != "") always
++	// start normally.
 +	if r.ExecID == "" {
-+		if spec, err := utils.ReadSpec(c.Bundle); err == nil {
-+			if imagePath := shouldRestore(spec); imagePath != "" {
-+				p, err := c.Restore(ctx, &extension.RestoreRequest{
-+					Start: r,
-+					Conf:  extension.RestoreConfig{ImagePath: imagePath},
-+				})
-+				if err != nil {
-+					return nil, errgrpc.ToGRPC(err)
-+				}
-+				return &task.StartResponse{
-+					Pid: uint32(p.Pid()),
-+				}, nil
++		spec, err := utils.ReadSpec(c.Bundle)
++		if err != nil {
++			// A restore-annotated container would silently cold-start if the
++			// spec is unreadable, so surface the error rather than swallow it.
++			log.L.WithError(err).Warnf("Start: reading spec for %s; cannot evaluate restore annotation", r.ID)
++		} else if imagePath := shouldRestore(spec); imagePath != "" {
++			p, err := c.Restore(ctx, &extension.RestoreRequest{
++				Start: r,
++				Conf:  extension.RestoreConfig{ImagePath: imagePath},
++			})
++			if err != nil {
++				return nil, errgrpc.ToGRPC(err)
 +			}
++			return &task.StartResponse{
++				Pid: uint32(p.Pid()),
++			}, nil
 +		}
 +	}
 +
  	p, err := c.Start(ctx, r)
  	if err != nil {
  		return nil, errgrpc.ToGRPC(err)
-@@ -447,9 +501,17 @@ func (s *runscService) CloseIO(ctx context.Context, r *task.CloseIORequest) (*ty
+@@ -447,9 +494,17 @@ func (s *runscService) CloseIO(ctx context.Context, r *task.CloseIORequest) (*ty
  	return empty, nil
  }
  

@@ -235,63 +235,56 @@ func (s *runscService) CreateWithFSRestore(ctx context.Context, rfs *extension.C
 	}, nil
 }
 
-const (
-	// restoreImagePathAnnotation, when present on a container's OCI spec,
-	// makes Start restore the container's memory state from the named
-	// checkpoint image instead of starting it cold. This makes gVisor's
-	// existing restore path reachable through a normal containerd
-	// create/start (e.g. a forked pod).
-	restoreImagePathAnnotation = "dev.neevcloud.restore-image-path"
-	// restoreContainerAnnotation names the single container in the pod that
-	// should be restored. Other containers (pause, sidecars) start cold even
-	// though the pod-wide annotation reaches their specs too.
-	restoreContainerAnnotation = "dev.neevcloud.restore-container"
-	// criContainerNameAnnotation is the CRI annotation carrying the
-	// container's name within the pod.
-	criContainerNameAnnotation = "io.kubernetes.cri.container-name"
-)
+// restoreImagePathAnnotation, when present on a container's OCI spec, makes
+// Start restore the container from the named whole-sandbox checkpoint image
+// instead of starting it cold. A Kubernetes pod is one gVisor sandbox holding
+// the pause (root) container plus the app/sidecar sub-containers; gVisor
+// restores a sandbox as a unit, so every container in the forked pod carries
+// this (pod-wide) annotation and is restored from the same image. The pause
+// container is started first and runs runsc restore on the root, putting the
+// sentry into the restoring state; each sub-container then restores into it,
+// and the sentry resumes once container_count containers have been restored.
+//
+// Container names must match between the source and forked pods (gVisor remaps
+// checkpoint container IDs to the new IDs by name); Kubernetes reuses the same
+// container names across pods, so no remap is required.
+const restoreImagePathAnnotation = "dev.neevcloud.restore-image-path"
 
-// shouldRestore reports the checkpoint image path if this container is the
-// restore target, or "" if it should start cold. Only the named app container
-// (never the sandbox/root) is restored, so the pod-wide annotation does not
-// wrongly trigger restores of the pause or sidecar containers.
+// shouldRestore reports the whole-sandbox checkpoint image path for this
+// container, or "" if it should start cold.
 func shouldRestore(spec *specs.Spec) string {
-	imagePath := spec.Annotations[restoreImagePathAnnotation]
-	if imagePath == "" || utils.IsSandbox(spec) {
-		return ""
-	}
-	if target := spec.Annotations[restoreContainerAnnotation]; target != "" {
-		if spec.Annotations[criContainerNameAnnotation] != target {
-			return ""
-		}
-	}
-	return imagePath
+	return spec.Annotations[restoreImagePathAnnotation]
 }
 
-// Start starts the container. If the container's spec selects it for restore
-// (see shouldRestore), it is restored from the checkpoint image rather than
-// started cold.
+// Start starts the container. If the container's spec carries
+// restoreImagePathAnnotation, it is restored from that whole-sandbox checkpoint
+// image rather than started cold.
 func (s *runscService) Start(ctx context.Context, r *task.StartRequest) (*task.StartResponse, error) {
 	c, err := s.getContainer(r.ID)
 	if err != nil {
 		return nil, err
 	}
 
-	// Route to the restore path when this container is the restore target.
+	// Route the init process to the restore path when its spec selects a
+	// whole-sandbox checkpoint image. Exec processes (r.ExecID != "") always
+	// start normally.
 	if r.ExecID == "" {
-		if spec, err := utils.ReadSpec(c.Bundle); err == nil {
-			if imagePath := shouldRestore(spec); imagePath != "" {
-				p, err := c.Restore(ctx, &extension.RestoreRequest{
-					Start: r,
-					Conf:  extension.RestoreConfig{ImagePath: imagePath},
-				})
-				if err != nil {
-					return nil, errgrpc.ToGRPC(err)
-				}
-				return &task.StartResponse{
-					Pid: uint32(p.Pid()),
-				}, nil
+		spec, err := utils.ReadSpec(c.Bundle)
+		if err != nil {
+			// A restore-annotated container would silently cold-start if the
+			// spec is unreadable, so surface the error rather than swallow it.
+			log.L.WithError(err).Warnf("Start: reading spec for %s; cannot evaluate restore annotation", r.ID)
+		} else if imagePath := shouldRestore(spec); imagePath != "" {
+			p, err := c.Restore(ctx, &extension.RestoreRequest{
+				Start: r,
+				Conf:  extension.RestoreConfig{ImagePath: imagePath},
+			})
+			if err != nil {
+				return nil, errgrpc.ToGRPC(err)
 			}
+			return &task.StartResponse{
+				Pid: uint32(p.Pid()),
+			}, nil
 		}
 	}
 
