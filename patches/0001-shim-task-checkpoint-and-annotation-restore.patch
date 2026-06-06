@@ -1,0 +1,176 @@
+diff --git a/pkg/shim/v1/proc/init.go b/pkg/shim/v1/proc/init.go
+index a3ac694..7270772 100644
+--- a/pkg/shim/v1/proc/init.go
++++ b/pkg/shim/v1/proc/init.go
+@@ -275,6 +275,14 @@ func (p *Init) Restore(ctx context.Context, conf *extension.RestoreConfig) error
+ 	return p.initState.Start(ctx, conf)
+ }
+ 
++// Checkpoint saves the running container's state via the runsc runtime.
++func (p *Init) Checkpoint(ctx context.Context, opts *runsccmd.CheckpointOpts) error {
++	p.mu.Lock()
++	defer p.mu.Unlock()
++
++	return p.runtime.Checkpoint(ctx, p.id, opts)
++}
++
+ // SetExited set the exit status of the init process.
+ func (p *Init) SetExited(status int) {
+ 	p.mu.Lock()
+diff --git a/pkg/shim/v1/runsc/container.go b/pkg/shim/v1/runsc/container.go
+index fb0229d..fd006e6 100644
+--- a/pkg/shim/v1/runsc/container.go
++++ b/pkg/shim/v1/runsc/container.go
+@@ -406,6 +406,19 @@ func (c *Container) Restore(ctx context.Context, r *extension.RestoreRequest) (e
+ 	return p, nil
+ }
+ 
++// Checkpoint saves the running container's state to r.Path. The container is
++// left running so the source survives the snapshot (fork semantics).
++func (c *Container) Checkpoint(ctx context.Context, r *task.CheckpointTaskRequest) error {
++	p, err := c.Process("")
++	if err != nil {
++		return err
++	}
++	return p.(*proc.Init).Checkpoint(ctx, &runsccmd.CheckpointOpts{
++		ImagePath:    r.Path,
++		LeaveRunning: true,
++	})
++}
++
+ // Stats returns the stats for the container.
+ func (c *Container) Stats(ctx context.Context) (*task.StatsResponse, error) {
+ 	p, err := c.Process("")
+diff --git a/pkg/shim/v1/runsc/service.go b/pkg/shim/v1/runsc/service.go
+index 74bbf3a..09973e7 100644
+--- a/pkg/shim/v1/runsc/service.go
++++ b/pkg/shim/v1/runsc/service.go
+@@ -235,12 +235,66 @@ func (s *runscService) CreateWithFSRestore(ctx context.Context, rfs *extension.C
+ 	}, nil
+ }
+ 
+-// Start starts the container.
++const (
++	// restoreImagePathAnnotation, when present on a container's OCI spec,
++	// makes Start restore the container's memory state from the named
++	// checkpoint image instead of starting it cold. This makes gVisor's
++	// existing restore path reachable through a normal containerd
++	// create/start (e.g. a forked pod).
++	restoreImagePathAnnotation = "dev.neevcloud.restore-image-path"
++	// restoreContainerAnnotation names the single container in the pod that
++	// should be restored. Other containers (pause, sidecars) start cold even
++	// though the pod-wide annotation reaches their specs too.
++	restoreContainerAnnotation = "dev.neevcloud.restore-container"
++	// criContainerNameAnnotation is the CRI annotation carrying the
++	// container's name within the pod.
++	criContainerNameAnnotation = "io.kubernetes.cri.container-name"
++)
++
++// shouldRestore reports the checkpoint image path if this container is the
++// restore target, or "" if it should start cold. Only the named app container
++// (never the sandbox/root) is restored, so the pod-wide annotation does not
++// wrongly trigger restores of the pause or sidecar containers.
++func shouldRestore(spec *specs.Spec) string {
++	imagePath := spec.Annotations[restoreImagePathAnnotation]
++	if imagePath == "" || utils.IsSandbox(spec) {
++		return ""
++	}
++	if target := spec.Annotations[restoreContainerAnnotation]; target != "" {
++		if spec.Annotations[criContainerNameAnnotation] != target {
++			return ""
++		}
++	}
++	return imagePath
++}
++
++// Start starts the container. If the container's spec selects it for restore
++// (see shouldRestore), it is restored from the checkpoint image rather than
++// started cold.
+ func (s *runscService) Start(ctx context.Context, r *task.StartRequest) (*task.StartResponse, error) {
+ 	c, err := s.getContainer(r.ID)
+ 	if err != nil {
+ 		return nil, err
+ 	}
++
++	// Route to the restore path when this container is the restore target.
++	if r.ExecID == "" {
++		if spec, err := utils.ReadSpec(c.Bundle); err == nil {
++			if imagePath := shouldRestore(spec); imagePath != "" {
++				p, err := c.Restore(ctx, &extension.RestoreRequest{
++					Start: r,
++					Conf:  extension.RestoreConfig{ImagePath: imagePath},
++				})
++				if err != nil {
++					return nil, errgrpc.ToGRPC(err)
++				}
++				return &task.StartResponse{
++					Pid: uint32(p.Pid()),
++				}, nil
++			}
++		}
++	}
++
+ 	p, err := c.Start(ctx, r)
+ 	if err != nil {
+ 		return nil, errgrpc.ToGRPC(err)
+@@ -447,9 +501,17 @@ func (s *runscService) CloseIO(ctx context.Context, r *task.CloseIORequest) (*ty
+ 	return empty, nil
+ }
+ 
+-// Checkpoint checkpoints the container.
++// Checkpoint checkpoints the container by saving its state to the runsc
++// checkpoint image at r.Path, leaving the container running.
+ func (s *runscService) Checkpoint(ctx context.Context, r *task.CheckpointTaskRequest) (*types.Empty, error) {
+-	return empty, errdefs.ErrNotImplemented
++	c, err := s.getContainer(r.ID)
++	if err != nil {
++		return nil, err
++	}
++	if err := c.Checkpoint(ctx, r); err != nil {
++		return nil, errgrpc.ToGRPC(err)
++	}
++	return empty, nil
+ }
+ 
+ // Restore restores the container.
+diff --git a/pkg/shim/v1/runsccmd/runsc.go b/pkg/shim/v1/runsccmd/runsc.go
+index 64b590b..6ecd4d9 100644
+--- a/pkg/shim/v1/runsccmd/runsc.go
++++ b/pkg/shim/v1/runsccmd/runsc.go
+@@ -291,6 +291,36 @@ func (r *Runsc) Restore(context context.Context, id string, cio runc.IO, opts *R
+ 	return r.start(context, cio, r.command(context, append(args, id)...))
+ }
+ 
++// CheckpointOpts is a set of options to runsc.Checkpoint().
++type CheckpointOpts struct {
++	// ImagePath is the directory the checkpoint image is written to.
++	ImagePath string
++	// LeaveRunning keeps the container running after the checkpoint instead
++	// of stopping it, so the source survives a snapshot.
++	LeaveRunning bool
++}
++
++func (o *CheckpointOpts) args() []string {
++	var out []string
++	if o.ImagePath != "" {
++		out = append(out, fmt.Sprintf("--image-path=%s", o.ImagePath))
++	}
++	if o.LeaveRunning {
++		out = append(out, "--leave-running")
++	}
++	return out
++}
++
++// Checkpoint saves the running container's state into opts.ImagePath. It
++// blocks until runsc finishes writing the image.
++func (r *Runsc) Checkpoint(context context.Context, id string, opts *CheckpointOpts) error {
++	args := []string{"checkpoint"}
++	if opts != nil {
++		args = append(args, opts.args()...)
++	}
++	return r.runOrError(r.command(context, append(args, id)...))
++}
++
+ type waitResult struct {
+ 	ID         string `json:"id"`
+ 	ExitStatus int    `json:"exitStatus"`
