@@ -43,8 +43,8 @@ sequenceDiagram
     Shim->>RS: runsc checkpoint --image-path=P --leave-running ID
     RS->>GV: serialize entire sentry (all containers)
     GV-->>RS: checkpoint.img / pages.img + metadata{container_count, specs}
-    RS-->>Shim: exit 0 (containers left running)
-    Shim-->>Client: ok ; source pod stays Running
+    RS-->>Shim: exit 0, containers left running
+    Shim-->>Client: ok, source pod stays Running
 ```
 
 ## 3. Whole-sandbox restore — the state machine
@@ -72,13 +72,13 @@ sequenceDiagram
     Op->>CD: ctr tasks checkpoint agent@A → /img
     CD->>Shim: Checkpoint
     Shim->>RS: runsc checkpoint --leave-running
-    RS-->>Op: image (container_count=N) ; pod A keeps running ✅
+    RS-->>Op: image with container_count=N, pod A keeps running ✅
 
     Note over Op,RS: fork → pod B  (annotation restore-image-path=/img on the pod)
     CD->>Shim: Start(pause@B)
     Shim->>RS: runsc restore pause@B  → restoringUnstarted, total=N
     CD->>Shim: Start(agent@B)
-    Shim->>RS: runsc restore agent@B  → RestoreSubcontainer ; count==N → resume
+    Shim->>RS: runsc restore agent@B  → RestoreSubcontainer, count==N → resume
     Note over RS: remap checkpoint CIDs → B's CIDs by container NAME
     RS-->>Op: pod B Running, uuid=A, counter continues, then diverges ✅
 ```

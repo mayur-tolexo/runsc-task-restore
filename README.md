@@ -69,6 +69,7 @@ diagrams in [docs/flows.md](docs/flows.md).
 
 ## Layout
 
+- [`docs/walkthrough.md`](docs/walkthrough.md) — full layer-by-layer walkthrough: kubelet → container start, gVisor internals, containerd & runsc checkpoint/restore, plus deep dives (async page loading, gofer re-establishment, netstack/sockets). All diagrams validated with mermaid-cli.
 - [`docs/HLD.md`](docs/HLD.md) — high-level design: layers, where the fix goes, the whole-sandbox restore state machine, ID-remap-by-name.
 - [`docs/flows.md`](docs/flows.md) — flow + sequence diagrams (checkpoint, whole-sandbox restore, working pod fork, one-to-many).
 - [`patches/`](patches/) — the diff against upstream gVisor.

@@ -134,13 +134,13 @@ sequenceDiagram
     Ctl->>CD: ctr tasks checkpoint <any container in pod A>
     CD->>Shim: Checkpoint(Path=/img)
     Shim->>RS: runsc checkpoint --leave-running --image-path=/img
-    RS-->>Ctl: whole-sandbox image (metadata: container_count, specs); pod A keeps running
+    RS-->>Ctl: whole-sandbox image with metadata container_count and specs, pod A keeps running
 
     Note over Ctl,RS: fork → new pod B (annotation: restore-image-path=/img)
     CD->>Shim: Start(pause@B)
     Shim->>RS: runsc restore <pause@B>  → state=restoringUnstarted, totalContainers=N
     CD->>Shim: Start(app@B)
-    Shim->>RS: runsc restore <app@B>    → RestoreSubcontainer; count==N → resume
+    Shim->>RS: runsc restore app@B    → RestoreSubcontainer, count==N → resume
     RS-->>Ctl: pod B running with pod A's memory (same UUID), then diverges
 ```
 
