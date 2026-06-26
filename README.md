@@ -72,6 +72,7 @@ diagrams in [docs/flows.md](docs/flows.md).
 - **[Release `gvisor-cr-pr13326`](https://github.com/mayur-tolexo/runsc-task-restore/releases/tag/gvisor-cr-pr13326)** — prebuilt `runsc` + `containerd-shim-runsc-v1` (arm64; pinned gVisor `5a65ec1f`).
 - [`NODE-SETUP.md`](NODE-SETUP.md) — what to configure on each sandbox node: install the binary pair from the release, containerd annotation passthrough, `runsc.toml`, the CephFS snapshot store, and a DaemonSet installer.
 - [`SETUP.md`](SETUP.md) — how to run upstream PR #13326 on a real Kubernetes cluster: build the shim + runsc, distribute to nodes, containerd config, the fork workflow, and productionization.
+- [`docs/CHECKPOINT-RESTORE.md`](docs/CHECKPOINT-RESTORE.md) — step-by-step runbook for the two primitives (checkpoint a running sandbox, restore/fork it) using the latest #13326 `dev.gvisor.internal.*` annotation contract.
 - [`docs/walkthrough.md`](docs/walkthrough.md) — full layer-by-layer walkthrough: kubelet → container start, gVisor internals, containerd & runsc checkpoint/restore, plus deep dives (async page loading, gofer re-establishment, netstack/sockets). All diagrams validated with mermaid-cli.
 - [`docs/HLD.md`](docs/HLD.md) — high-level design: layers, where the fix goes, the whole-sandbox restore state machine, ID-remap-by-name.
 - [`docs/flows.md`](docs/flows.md) — flow + sequence diagrams (checkpoint, whole-sandbox restore, working pod fork, one-to-many).

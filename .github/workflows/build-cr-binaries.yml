@@ -1,0 +1,97 @@
+name: build-cr-binaries
+
+# Builds the patched runsc + containerd-shim-runsc-v1 pair from gVisor PR #13326
+# natively on a runner of the target arch (no qemu), then attaches them to the
+# release. amd64 runs on ubuntu-latest; arm64 on ubuntu-24.04-arm.
+on:
+  workflow_dispatch:
+    inputs:
+      gvisor_ref:
+        description: "gVisor ref to build (PR head or pinned commit)"
+        default: "pull/13326/head"
+      release_tag:
+        description: "Release tag to attach the binaries to"
+        default: "gvisor-cr-pr13326"
+      arch:
+        description: "Target architecture"
+        default: "amd64"
+        type: choice
+        options: [amd64, arm64]
+
+permissions:
+  contents: write  # upload release assets via GITHUB_TOKEN
+
+jobs:
+  build:
+    name: build ${{ inputs.arch }}
+    runs-on: ${{ inputs.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    timeout-minutes: 180
+    steps:
+      - name: Checkout build scripts
+        uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          sudo docker image prune -af || true
+          df -h /
+
+      - name: Clone gVisor and check out the PR
+        run: |
+          set -euxo pipefail
+          git clone --filter=blob:none https://github.com/google/gvisor.git gvisor
+          cd gvisor
+          git fetch origin "${{ inputs.gvisor_ref }}"
+          git checkout FETCH_HEAD
+          echo "GVISOR_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Map arch to gVisor ARCH
+        run: |
+          case "${{ inputs.arch }}" in
+            amd64) echo "GV_ARCH=x86_64"  >> "$GITHUB_ENV" ;;
+            arm64) echo "GV_ARCH=aarch64" >> "$GITHUB_ENV" ;;
+            *) echo "unknown arch"; exit 1 ;;
+          esac
+
+      - name: Build runsc + shim (native, bazel-in-Docker)
+        run: ARCH="$GV_ARCH" ./scripts/build-cr-binaries.sh "$PWD/gvisor" "$PWD/out"
+
+      - name: Rename + checksum
+        run: |
+          set -euxo pipefail
+          A="${{ inputs.arch }}"
+          cd out
+          mv runsc "runsc-linux-$A"
+          mv containerd-shim-runsc-v1 "containerd-shim-runsc-v1-linux-$A"
+          file "runsc-linux-$A" "containerd-shim-runsc-v1-linux-$A"
+          sha256sum "runsc-linux-$A" "containerd-shim-runsc-v1-linux-$A" | tee "SHA256SUMS.$A"
+          {
+            echo "### amd64/arm64 build for \`${{ inputs.arch }}\`"
+            echo "gVisor commit: \`$GVISOR_SHA\`"
+            echo '```'
+            cat "SHA256SUMS.$A"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euxo pipefail
+          A="${{ inputs.arch }}"
+          TAG="${{ inputs.release_tag }}"
+          REPO="${{ github.repository }}"
+          cd out
+          gh release upload "$TAG" \
+            "runsc-linux-$A" "containerd-shim-runsc-v1-linux-$A" \
+            --repo "$REPO" --clobber
+          # Merge our checksums into the combined SHA256SUMS asset, preserving
+          # the other arch's lines.
+          mkdir -p prev
+          gh release download "$TAG" --repo "$REPO" -p SHA256SUMS -D prev || true
+          touch prev/SHA256SUMS
+          grep -v -- "-linux-$A$" prev/SHA256SUMS > merged || true
+          cat "SHA256SUMS.$A" >> merged
+          sort -k2 -u merged > SHA256SUMS
+          gh release upload "$TAG" SHA256SUMS --repo "$REPO" --clobber
