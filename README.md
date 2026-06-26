@@ -69,7 +69,7 @@ diagrams in [docs/flows.md](docs/flows.md).
 
 ## Layout
 
-- **[Release `gvisor-cr-pr13326`](https://github.com/mayur-tolexo/runsc-task-restore/releases/tag/gvisor-cr-pr13326)** — prebuilt `runsc` + `containerd-shim-runsc-v1` (arm64; pinned gVisor `5a65ec1f`).
+- **[Release `gvisor-cr-pr13326`](https://github.com/mayur-tolexo/runsc-task-restore/releases/tag/gvisor-cr-pr13326)** — prebuilt `runsc` + `containerd-shim-runsc-v1` for linux/amd64 and linux/arm64, built from gVisor PR head `2f05ec97` by the [`build-cr-binaries`](.github/workflows/build-cr-binaries.yml) workflow.
 - [`NODE-SETUP.md`](NODE-SETUP.md) — what to configure on each sandbox node: install the binary pair from the release, containerd annotation passthrough, `runsc.toml`, the CephFS snapshot store, and a DaemonSet installer.
 - [`SETUP.md`](SETUP.md) — how to run upstream PR #13326 on a real Kubernetes cluster: build the shim + runsc, distribute to nodes, containerd config, the fork workflow, and productionization.
 - [`docs/CHECKPOINT-RESTORE.md`](docs/CHECKPOINT-RESTORE.md) — step-by-step runbook for the two primitives (checkpoint a running sandbox, restore/fork it) using the latest #13326 `dev.gvisor.internal.*` annotation contract.
