@@ -40,19 +40,22 @@ make ARCH="$ARCH" copy TARGETS=//runsc:runsc                   DESTINATION="$OUT
 # If `make copy` did not place the binaries (it trips on a long xargs line), pull
 # them straight out of the bazel cache. macOS keeps the cache in a Docker volume
 # (gvisor-bazel-cache-<hash>-<ARCH>); Linux keeps it on a host path
-# ($HOME/.cache/bazel). Handle both. The relpath under the cache is
-# .../bin/<target-dir>/<name>, so match on it to avoid grabbing a test binary.
+# ($HOME/.cache/bazel). Handle both. Match the binary by name anywhere under a
+# bin/ dir and pick the largest hit — rules_go may nest the real binary under a
+# <name>_/ dir, and -type f skips the convenience symlink. `ls -S` (sort by size)
+# is supported by busybox, GNU, and BSD, so this is portable across the alpine
+# container, Linux CI, and macOS.
 VOL="$(docker volume ls --format '{{.Name}}' | grep "^gvisor-bazel-cache.*-$ARCH$" | head -1)"
 [[ -n "$VOL" ]] || VOL="$(docker volume ls --format '{{.Name}}' | grep '^gvisor-bazel-cache' | head -1)"
 HOST_CACHE="${BAZEL_CACHE:-$HOME/.cache/bazel}"
-extract() { # <bin-name> <target-subdir>
-  local name="$1" sub="$2"
+extract() { # <bin-name>
+  local name="$1"
   [[ -f "$OUT/$name" ]] && return 0
   # macOS: search the cache volume from a throwaway container.
   if [[ -n "$VOL" ]]; then
     local p
     p="$(docker run --rm -v "$VOL":/cache alpine \
-          sh -c "find /cache -type f -path '*/bin/$sub/$name' | head -1")"
+          sh -c "find /cache -type f -name '$name' -path '*/bin/*' 2>/dev/null | xargs ls -S 2>/dev/null | head -1")"
     if [[ -n "$p" ]]; then
       docker run --rm -v "$VOL":/cache -v "$OUT":/out alpine \
         sh -c "cp '$p' /out/$name && chmod +x /out/$name"
@@ -61,12 +64,12 @@ extract() { # <bin-name> <target-subdir>
   fi
   # Linux: search the on-disk bazel cache directly.
   local hp
-  hp="$(find "$HOST_CACHE" -type f -path "*/bin/$sub/$name" 2>/dev/null | head -1)"
+  hp="$(find "$HOST_CACHE" -type f -name "$name" -path '*/bin/*' 2>/dev/null | xargs ls -S 2>/dev/null | head -1)"
   [[ -n "$hp" ]] || { echo "ERROR: $name not found in bazel cache (vol=$VOL dir=$HOST_CACHE)"; exit 1; }
   cp "$hp" "$OUT/$name" && chmod +x "$OUT/$name"
 }
-extract runsc runsc
-extract containerd-shim-runsc-v1 shim
+extract runsc
+extract containerd-shim-runsc-v1
 
 echo "== artifacts (ARCH=$ARCH) =="
 ( cd "$OUT" && sha256sum runsc containerd-shim-runsc-v1 && file runsc containerd-shim-runsc-v1 )
