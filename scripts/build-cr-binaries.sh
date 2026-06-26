@@ -41,21 +41,32 @@ make ARCH="$ARCH" copy TARGETS=//runsc:runsc                   DESTINATION="$OUT
 # them straight out of the bazel cache. macOS keeps the cache in a Docker volume
 # (gvisor-bazel-cache-<hash>-<ARCH>); Linux keeps it on a host path
 # ($HOME/.cache/bazel). Handle both. Match the binary by name anywhere under a
-# bin/ dir and pick the largest hit — rules_go may nest the real binary under a
-# <name>_/ dir, and -type f skips the convenience symlink. `ls -S` (sort by size)
-# is supported by busybox, GNU, and BSD, so this is portable across the alpine
-# container, Linux CI, and macOS.
-VOL="$(docker volume ls --format '{{.Name}}' | grep "^gvisor-bazel-cache.*-$ARCH$" | head -1)"
-[[ -n "$VOL" ]] || VOL="$(docker volume ls --format '{{.Name}}' | grep '^gvisor-bazel-cache' | head -1)"
+# bin/ dir and pick the largest hit — rules_go nests the real binary under a
+# <name>_/ dir, and -type f skips the convenience symlink.
+VOL="$(docker volume ls --format '{{.Name}}' | grep "^gvisor-bazel-cache.*-$ARCH$" | head -1 || true)"
+[[ -n "$VOL" ]] || VOL="$(docker volume ls --format '{{.Name}}' | grep '^gvisor-bazel-cache' | head -1 || true)"
 HOST_CACHE="${BAZEL_CACHE:-$HOME/.cache/bazel}"
+
+# pick_largest <root> <name>: print the largest regular file named <name> under a
+# bin/ dir in <root>. Uses a wc -c loop (no `head`) so a SIGPIPE under pipefail
+# can never abort the script mid-extract.
+pick_largest() {
+  local root="$1" name="$2" best="" bestsz=-1 f sz
+  while IFS= read -r f; do
+    sz="$(wc -c <"$f" 2>/dev/null || echo 0)"
+    if [ "$sz" -gt "$bestsz" ]; then bestsz="$sz"; best="$f"; fi
+  done < <(find "$root" -type f -name "$name" -path '*/bin/*' 2>/dev/null)
+  printf '%s' "$best"
+}
+
 extract() { # <bin-name>
   local name="$1"
   [[ -f "$OUT/$name" ]] && return 0
-  # macOS: search the cache volume from a throwaway container.
+  # macOS: search/copy from the cache volume via a throwaway container.
   if [[ -n "$VOL" ]]; then
     local p
     p="$(docker run --rm -v "$VOL":/cache alpine \
-          sh -c "find /cache -type f -name '$name' -path '*/bin/*' 2>/dev/null | xargs ls -S 2>/dev/null | head -1")"
+          sh -c "find /cache -type f -name '$name' -path '*/bin/*' 2>/dev/null | xargs -r ls -S 2>/dev/null | head -1 || true")"
     if [[ -n "$p" ]]; then
       docker run --rm -v "$VOL":/cache -v "$OUT":/out alpine \
         sh -c "cp '$p' /out/$name && chmod +x /out/$name"
@@ -64,7 +75,7 @@ extract() { # <bin-name>
   fi
   # Linux: search the on-disk bazel cache directly.
   local hp
-  hp="$(find "$HOST_CACHE" -type f -name "$name" -path '*/bin/*' 2>/dev/null | xargs ls -S 2>/dev/null | head -1)"
+  hp="$(pick_largest "$HOST_CACHE" "$name")"
   [[ -n "$hp" ]] || { echo "ERROR: $name not found in bazel cache (vol=$VOL dir=$HOST_CACHE)"; exit 1; }
   cp "$hp" "$OUT/$name" && chmod +x "$OUT/$name"
 }
