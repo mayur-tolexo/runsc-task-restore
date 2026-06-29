@@ -46,6 +46,16 @@ jobs:
           git checkout FETCH_HEAD
           echo "GVISOR_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
+      - name: Apply local shim patches on top of the PR head
+        run: |
+          set -euxo pipefail
+          cd gvisor
+          # 0001 (checkpoint/restore + annotation-restore) is already in the PR
+          # head, so only the workspace mount-hint passthrough is layered here.
+          p="$GITHUB_WORKSPACE/patches/0002-shim-honor-operator-workspace-mount-hint.patch"
+          git apply --check "$p"
+          git apply --verbose "$p"
+
       - name: Map arch to gVisor ARCH
         run: |
           case "${{ inputs.arch }}" in

@@ -1,0 +1,18 @@
+diff --git a/pkg/shim/v1/utils/volumes.go b/pkg/shim/v1/utils/volumes.go
+--- a/pkg/shim/v1/utils/volumes.go
++++ b/pkg/shim/v1/utils/volumes.go
+@@ -167,6 +167,14 @@ func UpdateVolumeAnnotations(s *specs.Spec) (bool, error) {
+ 			continue
+ 		}
+ 		volume := volumeName(k)
++		// An operator may supply a complete mount hint for a volume whose source
++		// is not a kubelet-managed dir (e.g. a hostPath workspace realised as a
++		// shared disk-backed tmpfs overlay). Honour it verbatim: skip the emptyDir
++		// source resolution and type rewriting below, which would otherwise fail to
++		// locate the volume or downgrade the hint.
++		if src := s.Annotations[volumeSourceKey(volume)]; filepath.IsAbs(src) && !strings.Contains(src, emptyDirVolumesDir) {
++			continue
++		}
+ 		if IsSandbox(s) {
+ 			// This is the root (first) container. Mount annotations are only
+ 			// consumed from this container's spec. So fix mount annotations by:
