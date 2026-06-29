@@ -1,18 +1,31 @@
-diff --git a/pkg/shim/v1/utils/volumes.go b/pkg/shim/v1/utils/volumes.go
 --- a/pkg/shim/v1/utils/volumes.go
 +++ b/pkg/shim/v1/utils/volumes.go
-@@ -167,6 +167,14 @@ func UpdateVolumeAnnotations(s *specs.Spec) (bool, error) {
- 			continue
- 		}
- 		volume := volumeName(k)
-+		// An operator may supply a complete mount hint for a volume whose source
-+		// is not a kubelet-managed dir (e.g. a hostPath workspace realised as a
-+		// shared disk-backed tmpfs overlay). Honour it verbatim: skip the emptyDir
-+		// source resolution and type rewriting below, which would otherwise fail to
-+		// locate the volume or downgrade the hint.
-+		if src := s.Annotations[volumeSourceKey(volume)]; filepath.IsAbs(src) && !strings.Contains(src, emptyDirVolumesDir) {
-+			continue
-+		}
- 		if IsSandbox(s) {
- 			// This is the root (first) container. Mount annotations are only
- 			// consumed from this container's spec. So fix mount annotations by:
+@@ -184,6 +184,16 @@
+ 			}
+ 			s.Annotations[volumeSourceKey(volume)] = path
+ 			if strings.Contains(path, emptyDirVolumesDir) {
++				// Operator opted this emptyDir into a shared, disk-backed tmpfs overlay
++				// by pre-setting share=pod. Keep the OCI mount a bind (disk filestore) and
++				// only fix the hint type, so gVisor builds one SelfOverlay master across
++				// the pod's containers that runsc checkpoint captures; the kubelet still
++				// owns the emptyDir.
++				if s.Annotations[volumeShareKey(volume)] == "pod" {
++					s.Annotations[k] = "tmpfs"
++					updated = true
++					continue
++				}
+ 				forceShared := emptyDirForceShared(s.Annotations, volume)
+ 				empty := isEmptyDirEmpty(path)
+ 				if !forceShared && empty {
+@@ -220,6 +230,11 @@
+ 				// matching.
+ 				if yes, _ := isVolumePath(volume, s.Mounts[i].Source); yes {
+ 					if strings.Contains(s.Mounts[i].Source, emptyDirVolumesDir) {
++						// Pod-shared overlay emptyDir: keep the bind mount so its upper stays
++						// a disk-backed tmpfs (see the sandbox branch).
++						if s.Annotations[volumeShareKey(volume)] == "pod" {
++							continue
++						}
+ 						forceShared := emptyDirForceShared(s.Annotations, volume)
+ 						empty := isEmptyDirEmpty(s.Mounts[i].Source)
+ 						if forceShared || !empty {
