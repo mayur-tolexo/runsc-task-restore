@@ -1,0 +1,32 @@
+# Two containers sharing one disk-backed /workspace overlay.
+# The gVisor mount hints (type + share=pod) drive the shim change: keep the
+# emptyDir a bind (disk filestore) but hint tmpfs, so gVisor builds ONE
+# SelfOverlay master shared across both containers that runsc checkpoint captures.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ws-counter
+  annotations:
+    dev.gvisor.spec.mount.workspace.type: bind
+    dev.gvisor.spec.mount.workspace.share: pod
+spec:
+  runtimeClassName: gvisor
+  restartPolicy: Never
+  containers:
+    - name: writer-a
+      image: counter:ws          # counter workload on a busybox base (for exec/cat)
+      imagePullPolicy: Never
+      args: ["--tick=1s", "--state-file=/workspace/a.state"]
+      volumeMounts:
+        - name: workspace
+          mountPath: /workspace
+    - name: writer-b
+      image: counter:ws
+      imagePullPolicy: Never
+      args: ["--tick=1s", "--state-file=/workspace/b.state"]
+      volumeMounts:
+        - name: workspace
+          mountPath: /workspace
+  volumes:
+    - name: workspace
+      emptyDir: {}

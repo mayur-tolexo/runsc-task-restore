@@ -51,6 +51,17 @@ versa), build inside a linux node of the target arch, or pass bazel a target
 platform. Simplest in CI: run the build on a runner of the target arch and
 publish `gvisor-cr-<commit>-<arch>.tar` containing both binaries.
 
+**Skip the build — use the prebuilt pair.** The
+[`gvisor-cr-workspace-overlay`](https://github.com/mayur-tolexo/runsc-task-restore/releases/tag/gvisor-cr-workspace-overlay)
+release ships `runsc` + `containerd-shim-runsc-v1` for both arches, built from
+the `neev/workspace-overlay` fork branch — checkpoint/restore plus the pod-shared
+disk-backed `/workspace` overlay and the multi-container restore fix. To rebuild
+it yourself, the [`build-fork`](.github/workflows/build-fork.yml) workflow clones
+that branch (which already carries every change, no local patch step) and builds
+both binaries natively per arch; `build-cr-binaries.sh` above is the same builder
+it calls. See [docs/WORKSPACE-OVERLAY.md](docs/WORKSPACE-OVERLAY.md) for what the
+overlay adds and a full verification run.
+
 ## 2. Distribute to every sandbox node
 
 Replace both binaries wherever your nodes get `runsc` today — a **gVisor

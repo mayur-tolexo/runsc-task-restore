@@ -1,0 +1,33 @@
+# Restore pod: same shape as ws-shared-pod.yaml plus the shim restore trigger.
+# The shim sees host-image-path and restores the whole sandbox (both containers
+# + memory + the /workspace overlay) from the checkpoint image instead of
+# starting fresh. The workspace comes back on a fresh emptyDir.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: ws-counter-restore
+  annotations:
+    dev.gvisor.internal.restore.host-image-path: /poc/ws-live
+    dev.gvisor.spec.mount.workspace.type: bind
+    dev.gvisor.spec.mount.workspace.share: pod
+spec:
+  runtimeClassName: gvisor
+  restartPolicy: Never
+  containers:
+    - name: writer-a
+      image: counter:ws
+      imagePullPolicy: Never
+      args: ["--tick=1s", "--state-file=/workspace/a.state"]
+      volumeMounts:
+        - name: workspace
+          mountPath: /workspace
+    - name: writer-b
+      image: counter:ws
+      imagePullPolicy: Never
+      args: ["--tick=1s", "--state-file=/workspace/b.state"]
+      volumeMounts:
+        - name: workspace
+          mountPath: /workspace
+  volumes:
+    - name: workspace
+      emptyDir: {}
