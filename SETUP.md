@@ -157,7 +157,7 @@ sudo systemctl restart containerd      # drain the node first if it serves traff
 ```sh
 # patched shim present?
 sha256sum /usr/local/bin/containerd-shim-runsc-v1
-grep -ac dev.gvisor.checkpoint.host-image-path /usr/local/bin/containerd-shim-runsc-v1   # expect 1
+grep -ac dev.gvisor.internal.restore.host-image-path /usr/local/bin/containerd-shim-runsc-v1   # expect 1
 
 # checkpoint smoke test against a running runsc pod's container
 CID=$(crictl --runtime-endpoint unix:///run/containerd/containerd.sock ps -q --state Running --name <ctr> | head -1)
@@ -178,7 +178,7 @@ FORK (new pod)
   5. create the forked Pod with:
         metadata:
           annotations:
-            dev.gvisor.checkpoint.host-image-path: <host-path>
+            dev.gvisor.internal.restore.host-image-path: <host-path>
   6. kubelet starts it normally -> shim restores the whole sandbox -> pod resumes
 ```
 
@@ -186,10 +186,10 @@ Annotation reference (set on `metadata.annotations` of the forked pod):
 
 | Annotation | Meaning |
 |---|---|
-| `dev.gvisor.checkpoint.host-image-path` | node-local path to the checkpoint image dir; triggers restore on Start |
-| `dev.gvisor.checkpoint.direct` | use direct IO for restore |
-| `dev.gvisor.checkpoint.save-restore-exec-argv` | hook runsc runs inside the sandbox before save / after restore (e.g. `cuda-checkpoint`) |
-| `dev.gvisor.checkpoint.save-restore-exec-timeout` | Go duration bounding that hook |
+| `dev.gvisor.internal.restore.host-image-path` | node-local path to the checkpoint image dir; triggers restore on Start |
+| `dev.gvisor.internal.restore.direct` | use direct IO for restore |
+| `dev.gvisor.internal.checkpoint.save-restore-exec-argv` | hook runsc runs inside the sandbox before save / after restore (e.g. `cuda-checkpoint`) |
+| `dev.gvisor.internal.checkpoint.save-restore-exec-timeout` | Go duration bounding that hook |
 
 A minimal forked pod manifest:
 
@@ -199,7 +199,7 @@ kind: Pod
 metadata:
   name: my-pod-fork
   annotations:
-    dev.gvisor.checkpoint.host-image-path: /var/lib/gvisor-cr/snap-123
+    dev.gvisor.internal.restore.host-image-path: /var/lib/gvisor-cr/snap-123
 spec:
   runtimeClassName: gvisor          # mapped to the runsc handler
   restartPolicy: Never
@@ -213,6 +213,38 @@ spec:
 > container IDs to the new pod's IDs by name). Kubernetes reuses names, so this
 > is automatic.
 
+### Pod-shared disk-backed `/workspace`
+
+No new annotation or containerd config beyond the above — the `dev.gvisor.*`
+passthrough in step 3 already covers the mount hints below. To opt an `emptyDir`
+into a disk-backed overlay shared across the pod's containers and captured by
+`runsc checkpoint`, set two mount-hint annotations on the pod, keyed by the
+volume name:
+
+```yaml
+metadata:
+  annotations:
+    dev.gvisor.spec.mount.<volume>.type: bind    # keep it a disk filestore
+    dev.gvisor.spec.mount.<volume>.share: pod    # one shared SelfOverlay master
+```
+
+Both matter: `type` (any value works — the shim rewrites it) makes the shim
+process the volume, and `share: pod` is the trigger for the shared disk-backed
+overlay. Mount the same `emptyDir` in each container that shares it. A running
+gVisor pod materializes the overlay as a `.gvisor.filestore.*` file inside the
+volume's node directory (disk, not RAM). Checkpoint and restore the pod exactly
+as above — the restore pod carries the same two hints plus
+`dev.gvisor.internal.restore.host-image-path`, and the workspace comes back on a
+fresh `emptyDir`. Full manifests: [`examples/ws-shared-pod.yaml`](examples/ws-shared-pod.yaml)
+and [`examples/ws-shared-restore.yaml`](examples/ws-shared-restore.yaml); full
+verification run in [`docs/WORKSPACE-OVERLAY.md`](docs/WORKSPACE-OVERLAY.md).
+
+Requires runsc/shim from the
+[`gvisor-cr-workspace-overlay`](https://github.com/mayur-tolexo/runsc-task-restore/releases/tag/gvisor-cr-workspace-overlay)
+release (the multi-container restore fix is what lets the second container
+restore; the earlier `gvisor-cr-pr13326` pair fails a shared-overlay restore with
+`inconsistent private memory files on restore`).
+
 ## 6. Productionize in aiagent-service
 
 - **Snapshot** — a control-plane call that runs containerd task `Checkpoint` on
@@ -220,7 +252,7 @@ spec:
   snapshot-id → image mapping.
 - **Fork on create** — when creating a Sandbox CR `from_snapshot=<id>`, stamp
   the pod template (in the CR builder / `injectSandboxdSidecar`) with
-  `dev.gvisor.checkpoint.host-image-path`, plus node affinity / a pre-fetch step
+  `dev.gvisor.internal.restore.host-image-path`, plus node affinity / a pre-fetch step
   so the image is local on the scheduled node.
 - **sandboxd** — confirm the sidecar tolerates being restored (it is part of the
   sentry). Test PTY/exec endpoints post-restore.
