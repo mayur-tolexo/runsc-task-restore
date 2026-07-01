@@ -1,0 +1,84 @@
+name: build-fork
+
+# Builds the patched runsc + containerd-shim-runsc-v1 pair straight from a
+# gVisor fork branch that already carries both the checkpoint/restore commit and
+# the workspace-overlay change (no local patch step). Uploads the pair as a
+# workflow artifact instead of attaching to a release. Native per arch.
+on:
+  workflow_dispatch:
+    inputs:
+      gvisor_repo:
+        description: "gVisor fork repo (owner/name)"
+        default: "mayur-tolexo/gvisor"
+      gvisor_ref:
+        description: "Branch or ref to build"
+        default: "neev/workspace-overlay"
+      arch:
+        description: "Target architecture"
+        default: "arm64"
+        type: choice
+        options: [amd64, arm64]
+
+jobs:
+  build:
+    name: build ${{ inputs.arch }}
+    runs-on: ${{ inputs.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    timeout-minutes: 180
+    steps:
+      - name: Checkout build scripts
+        uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          sudo docker image prune -af || true
+          df -h /
+
+      - name: Clone the gVisor fork branch
+        run: |
+          set -euxo pipefail
+          git clone --filter=blob:none "https://github.com/${{ inputs.gvisor_repo }}.git" gvisor
+          cd gvisor
+          git fetch origin "${{ inputs.gvisor_ref }}"
+          git checkout FETCH_HEAD
+          echo "GVISOR_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Map arch to gVisor ARCH
+        run: |
+          case "${{ inputs.arch }}" in
+            amd64) echo "GV_ARCH=x86_64"  >> "$GITHUB_ENV" ;;
+            arm64) echo "GV_ARCH=aarch64" >> "$GITHUB_ENV" ;;
+            *) echo "unknown arch"; exit 1 ;;
+          esac
+
+      - name: Build runsc + shim (native, bazel-in-Docker)
+        run: ARCH="$GV_ARCH" ./scripts/build-cr-binaries.sh "$PWD/gvisor" "$PWD/out"
+
+      - name: Rename + checksum
+        run: |
+          set -euxo pipefail
+          A="${{ inputs.arch }}"
+          cd out
+          mv runsc "runsc-linux-$A"
+          mv containerd-shim-runsc-v1 "containerd-shim-runsc-v1-linux-$A"
+          file "runsc-linux-$A" "containerd-shim-runsc-v1-linux-$A"
+          sha256sum "runsc-linux-$A" "containerd-shim-runsc-v1-linux-$A" | tee SHA256SUMS
+          {
+            echo "### fork build for \`${{ inputs.arch }}\`"
+            echo "repo: \`${{ inputs.gvisor_repo }}\` ref: \`${{ inputs.gvisor_ref }}\`"
+            echo "gVisor commit: \`$GVISOR_SHA\`"
+            echo '```'
+            cat SHA256SUMS
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cr-binaries-${{ inputs.arch }}
+          path: |
+            out/runsc-linux-${{ inputs.arch }}
+            out/containerd-shim-runsc-v1-linux-${{ inputs.arch }}
+            out/SHA256SUMS
+          if-no-files-found: error
