@@ -28,13 +28,15 @@ Self-contained changes to `pkg/shim/v1` (see
    then each sub-container (`RestoreSubcontainer`). The sentry resumes once
    `container_count` (recorded in the checkpoint metadata) containers are
    restored.
-3. **Pod-shared, disk-backed `/workspace` that survives checkpoint/restore.**
-   A shim guard keeps a `share=pod` `emptyDir` a disk-backed SelfOverlay shared
-   across the pod's containers (instead of a memory tmpfs or a gofer bind), and a
-   `runsc restore` fix (`configureRestore`) stops it registering a duplicate
-   MemoryFile per container — so a **multi-container** pod checkpoints and
-   restores cleanly and the workspace comes back on a fresh `emptyDir`. Full run
-   with real logs in [docs/WORKSPACE-OVERLAY.md](docs/WORKSPACE-OVERLAY.md).
+3. **Pod-shared, disk-backed `/workspace` that survives checkpoint/restore** —
+   no patch of ours, two upstream pieces plus pod annotations. Stock
+   `UpdateVolumeAnnotations` already realises a `type=bind` + `share=pod`
+   `emptyDir` as one disk-backed SelfOverlay shared across the pod's containers
+   ([#13595](https://github.com/google/gvisor/issues/13595)), and upstream fixed
+   the duplicate-MemoryFile restore that a *multi-container* shared overlay hit
+   ([#13608](https://github.com/google/gvisor/issues/13608), in
+   `release-20260803.0`+). Set the annotations and it round-trips. Full run with
+   real logs in [docs/WORKSPACE-OVERLAY.md](docs/WORKSPACE-OVERLAY.md).
 
 gVisor remaps checkpoint container IDs to the new pod's IDs **by container
 name**; Kubernetes reuses the same container names across pods, so a fork needs
@@ -76,7 +78,8 @@ diagrams in [docs/flows.md](docs/flows.md).
 
 ## Layout
 
-- **[Release `gvisor-cr-workspace-overlay`](https://github.com/mayur-tolexo/runsc-task-restore/releases/tag/gvisor-cr-workspace-overlay)** — prebuilt `runsc` + `containerd-shim-runsc-v1` for linux/amd64 and linux/arm64, built from the `neev/workspace-overlay` fork branch (checkpoint/restore + the pod-shared disk-backed `/workspace` overlay + the multi-container restore fix) by the [`build-fork`](.github/workflows/build-fork.yml) workflow.
+- **[Release `gvisor-cr-20260810`](https://github.com/mayur-tolexo/runsc-task-restore/releases/tag/gvisor-cr-20260810)** — current pair. `runsc` + `containerd-shim-runsc-v1` for linux/amd64 and linux/arm64, built by [`build-fork`](.github/workflows/build-fork.yml) from `neev/pr13326-20260810`: upstream `release-20260810.0` plus PR #13326 and nothing else. The shared-`/workspace` support it used to carry as local patches is upstream now.
+- **[Release `gvisor-cr-workspace-overlay`](https://github.com/mayur-tolexo/runsc-task-restore/releases/tag/gvisor-cr-workspace-overlay)** — superseded. Same capabilities on a `release-20260622.0` base, with the workspace overlay and the multi-container restore fix carried as local patches.
 - **[Release `gvisor-cr-pr13326`](https://github.com/mayur-tolexo/runsc-task-restore/releases/tag/gvisor-cr-pr13326)** — the earlier checkpoint/restore-only pair, built from gVisor PR head `2f05ec97` by the [`build-cr-binaries`](.github/workflows/build-cr-binaries.yml) workflow.
 - [`NODE-SETUP.md`](NODE-SETUP.md) — what to configure on each sandbox node: install the binary pair from the release, containerd annotation passthrough, `runsc.toml`, the CephFS snapshot store, and a DaemonSet installer.
 - [`SETUP.md`](SETUP.md) — how to run upstream PR #13326 on a real Kubernetes cluster: build the shim + runsc, distribute to nodes, containerd config, the fork workflow, and productionization.

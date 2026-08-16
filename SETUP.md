@@ -52,10 +52,11 @@ platform. Simplest in CI: run the build on a runner of the target arch and
 publish `gvisor-cr-<commit>-<arch>.tar` containing both binaries.
 
 **Skip the build — use the prebuilt pair.** The
-[`gvisor-cr-workspace-overlay`](https://github.com/mayur-tolexo/runsc-task-restore/releases/tag/gvisor-cr-workspace-overlay)
+[`gvisor-cr-20260810`](https://github.com/mayur-tolexo/runsc-task-restore/releases/tag/gvisor-cr-20260810)
 release ships `runsc` + `containerd-shim-runsc-v1` for both arches, built from
-the `neev/workspace-overlay` fork branch — checkpoint/restore plus the pod-shared
-disk-backed `/workspace` overlay and the multi-container restore fix. To rebuild
+the `neev/pr13326-20260810` fork branch — upstream `release-20260810.0` plus
+PR #13326, no other patches, since the pod-shared `/workspace` overlay needs only
+pod annotations on a current release. To rebuild
 it yourself, the [`build-fork`](.github/workflows/build-fork.yml) workflow clones
 that branch (which already carries every change, no local patch step) and builds
 both binaries natively per arch; `build-cr-binaries.sh` above is the same builder
@@ -240,10 +241,18 @@ and [`examples/ws-shared-restore.yaml`](examples/ws-shared-restore.yaml); full
 verification run in [`docs/WORKSPACE-OVERLAY.md`](docs/WORKSPACE-OVERLAY.md).
 
 Requires runsc/shim from the
-[`gvisor-cr-workspace-overlay`](https://github.com/mayur-tolexo/runsc-task-restore/releases/tag/gvisor-cr-workspace-overlay)
-release (the multi-container restore fix is what lets the second container
-restore; the earlier `gvisor-cr-pr13326` pair fails a shared-overlay restore with
-`inconsistent private memory files on restore`).
+[`gvisor-cr-20260810`](https://github.com/mayur-tolexo/runsc-task-restore/releases/tag/gvisor-cr-20260810)
+release, or any build on `release-20260803.0`+. That is the floor because a
+*multi-container* shared overlay only restores with upstream's fix for
+[#13608](https://github.com/google/gvisor/issues/13608); older pairs fail the
+second container with `inconsistent private memory files on restore`.
+
+To cap the shared overlay — the `overlay2` flag caps the rootfs only, so without
+this the workspace takes gVisor's default size — add the options hint:
+
+```yaml
+    dev.gvisor.spec.mount.<volume>.options: size=6442450944
+```
 
 ## 6. Productionize in aiagent-service
 

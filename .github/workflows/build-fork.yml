@@ -12,7 +12,7 @@ on:
         default: "mayur-tolexo/gvisor"
       gvisor_ref:
         description: "Branch or ref to build"
-        default: "neev/workspace-overlay"
+        default: "neev/pr13326-20260810"
       arch:
         description: "Target architecture"
         default: "arm64"

@@ -4,26 +4,36 @@ This extends the checkpoint/restore work with a `/workspace` that two containers
 in a pod share on **disk**, that `runsc checkpoint` captures, and that restores
 cleanly for **every** container in the pod — not just the first.
 
-Two changes make it work (both on the `neev/workspace-overlay` branch of the
-gVisor fork, built by the [`build-fork`](../.github/workflows/build-fork.yml)
-workflow):
+**No patch of ours is needed for this on a current release.** Two upstream
+pieces plus pod annotations do it:
 
-1. **Shim** (`pkg/shim/v1/utils/volumes.go`): when an `emptyDir` carries
-   `share=pod`, keep its OCI mount a `bind` (so the overlay upper is a disk
-   filestore) and set the hint `type=tmpfs`. gVisor then builds one shared
-   SelfOverlay master for the pod instead of a memory tmpfs or a gofer bind.
-2. **runsc restore** (`runsc/boot/vfs.go`, `configureRestore`): a pod-shared
+1. **Shim** (`pkg/shim/v1/utils/volumes.go`): stock `UpdateVolumeAnnotations`
+   already handles it. Annotate the volume `type=bind` + `share=pod` and the shim
+   rewrites the *hint* to `tmpfs` while leaving the OCI mount a `bind`, so gVisor
+   builds one shared SelfOverlay master whose upper is a disk filestore — rather
+   than a memory tmpfs or a gofer bind. This is what GKE's admission controller
+   stamps; see [#13595](https://github.com/google/gvisor/issues/13595). We first
+   carried a shim patch here, which turned out to duplicate stock behaviour.
+2. **runsc restore** (`runsc/boot/restore.go`, `runsc/boot/vfs.go`): a pod-shared
    overlay is one private MemoryFile owned by the first container; peers reuse it
-   via `getSharedMount`. Restore was registering a MemoryFile per container, so a
+   via `getSharedMount`. Restore registered a MemoryFile per container, so a
    two-container pod restored with more MemoryFiles than the checkpoint saved and
-   aborted with `inconsistent private memory files on restore`. `configureRestore`
-   now mirrors `getSharedMount` — only the first-seen source registers a
-   MemoryFile; peers close their extra filestore FD and skip.
+   aborted with `inconsistent private memory files on restore`. Fixed upstream in
+   [#13608](https://github.com/google/gvisor/issues/13608) (commit `fc507be3`,
+   first in `release-20260803.0`): a `sharedMfs` set threads through the
+   per-container loop so only the first-seen hint registers a MemoryFile and peers
+   close their extra FDs.
+
+So the only local patch left in the build is PR #13326 itself (the checkpoint/
+restore trigger, still open upstream).
 
 ## Environment
 
 kind `kindest/node:v1.31.0` used as a privileged Linux host, gVisor nested,
-linux/arm64. runsc/shim built from `neev/workspace-overlay`:
+linux/arm64. The run below predates the upstream fix and was made with the local
+patches; it was re-verified on `release-20260810.0` + PR #13326 alone, with the
+same result (see "Re-verified on stock" at the end). runsc/shim built from
+`neev/workspace-overlay`:
 
 ```
 $ docker exec gvisor-poc-control-plane runsc --version
@@ -163,3 +173,50 @@ The same live sandbox can be driven with `runsc` directly. `runsc checkpoint
 --bundle <copied-bundle> <new-id>` forks it into a second running sandbox
 (version must match across checkpoint/restore — a sandbox started under one
 runsc build cannot be restored by another).
+
+## Re-verified on stock (`release-20260810.0` + PR #13326 only)
+
+Same kind cluster, binaries built from `neev/pr13326-20260810` — no shim patch,
+no restore patch. Pod annotations only, at the caps aiagent-service now emits
+(4Gi rootfs + 6Gi workspace out of a 10Gi quota):
+
+```
+$ docker exec gvisor-poc-control-plane runsc --version
+runsc version release-20260615.0-392-g92eebf2f03f8
+
+# the shim resolved our bind hint to a shared tmpfs hint over a disk source
+dev.gvisor.spec.mount.workspace.type":"tmpfs
+dev.gvisor.spec.mount.workspace.share":"pod
+dev.gvisor.spec.mount.workspace.source":"/var/lib/kubelet/pods/.../kubernetes.io~empty-dir/workspace
+-rw-r--r-- 1 root root 1073741824 .gvisor.filestore.c8b920aa...
+
+$ kubectl exec clean-src -c agent -- df -h / /workspace
+none    4.0G   0   4.0G   0% /
+none    6.0G   8.0K 6.0G   0% /workspace
+```
+
+Both containers share it, each overlay caps independently, and an over-cap write
+is `ENOSPC` with the pod still Running (`restarts 0,0`, no `Evicted` event):
+
+```
+$ kubectl exec clean-src -c sandboxd -- sh -c 'echo x > /workspace/nope'
+sh: write error: No space left on device
+```
+
+Checkpoint and restore of the two-container pod, with the second container now
+restoring cleanly on stock runsc:
+
+```
+$ runsc --root /run/containerd/runsc/k8s.io checkpoint --leave-running --image-path /poc/clean <sandbox>
+rc=0
+
+# fresh pod carrying the same hints + dev.gvisor.internal.restore.host-image-path
+agent=0 sandboxd=0            # restart counts
+none    4.0G  4.0G  0 100% /
+none    6.0G  6.0G  0 100% /workspace
+md5 before=726ce8297085f1f4494afa9b7f53e7ff
+md5 after =726ce8297085f1f4494afa9b7f53e7ff
+```
+
+The workspace comes back on a fresh `emptyDir` with contents intact, the caps are
+still enforced, and a post-restore sidecar write is visible to the agent.
