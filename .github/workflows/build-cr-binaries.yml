@@ -6,8 +6,11 @@ name: build-cr-binaries
 on:
   workflow_dispatch:
     inputs:
+      gvisor_repo:
+        description: "owner/repo to clone gVisor from"
+        default: "google/gvisor"
       gvisor_ref:
-        description: "gVisor ref to build (PR head or pinned commit)"
+        description: "gVisor ref to build (PR head, branch, or pinned commit)"
         default: "pull/13326/head"
       release_tag:
         description: "Release tag to attach the binaries to"
@@ -40,7 +43,7 @@ jobs:
       - name: Clone gVisor and check out the PR
         run: |
           set -euxo pipefail
-          git clone --filter=blob:none https://github.com/google/gvisor.git gvisor
+          git clone --filter=blob:none "https://github.com/${{ inputs.gvisor_repo }}.git" gvisor
           cd gvisor
           git fetch origin "${{ inputs.gvisor_ref }}"
           git checkout FETCH_HEAD
