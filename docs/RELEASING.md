@@ -67,6 +67,43 @@ bypass. It never force-pushes `neev/base-*`.
 
 7. Verify the draft (below), then publish and freeze.
 
+### The version string is the checkpoint compatibility key
+
+This is the single most load-bearing thing in the pipeline, and it is not
+obvious from the code.
+
+gVisor stamps `git describe` output into `runsc/version.version` at build time
+(`runsc/BUILD`, via `x_defs` from `{STABLE_VERSION}`). `runsc/boot/restore.go`
+writes that string into every checkpoint, and `runsc/boot/controller.go` compares
+it on every restore:
+
+```go
+checkpointVersion := cm.restorer.metadata[VersionKey]
+currentVersion := version.Version()
+if checkpointVersion != currentVersion {
+    return fmt.Errorf("runsc version does not match across checkpoint restore, ...")
+}
+```
+
+A mismatch fails the restore outright. Three consequences:
+
+- **Never recut a published release to correct its stamp.** The recut binary
+  would be byte-different in that string alone, and every checkpoint taken under
+  the original would stop restoring. A cosmetically wrong stamp is strictly
+  better than a broken one — it still names the right commit, and save and
+  restore agree because both come from the same binary.
+- **Anything that changes `git describe` output changes checkpoint
+  compatibility.** The pinned `--abbrev=12` and the upstream-tag fetch in the
+  build job both feed it. Treat either as a compatibility-affecting change, not
+  a formatting one.
+- **Freezing on publish pins this string, not just provenance.** That is the real
+  reason a published manifest must never rebuild.
+
+`gvisor-cr-20260905` and `gvisor-cr-20260831` were built before the build job
+fetched upstream tags, so their binaries report an older base
+(`release-20260817.0-201-g...`) than their notes. They name the correct commit
+and restore correctly. Leave them.
+
 ### A note on the version stamp
 
 `runsc --version` on a node must match the `Version stamp` in the release notes.
@@ -169,7 +206,7 @@ it.
 |---|---|
 | `pick` + `skip` cover every commit on the head | a moved pull request must fail, not silently change what ships |
 | the lock must match the rebuilt stack | a tag's contents must not move after the fact |
-| `frozen` refuses to rebuild | published builds stay bit-identical |
+| `frozen` refuses to rebuild | published builds stay bit-identical — and their version string is the key their checkpoints restore against |
 | both arches build before anything uploads | a half-uploaded release once dropped an arch from `SHA256SUMS` |
 | the release is a draft | a bad release is effectively permanent |
 | the base branch is never force-pushed | force would discard whatever moved it |
@@ -186,3 +223,4 @@ it.
 | `base-<tag> is at X, not the base tag` | the review pull request was merged into it | reset or delete that branch; never merge the review pull request |
 | `Cannot force-push to this branch` | fork ruleset covers `neev/**` | exclude `neev/**`, or add a bypass |
 | `without \`workflow\` scope` | a mirrored commit changes a workflow file | mirror the last *picked* commit, not the head — the tool already does |
+| `runsc version does not match across checkpoint restore` | restoring under a different build than wrote the checkpoint | install the build named in that release; never recut a published release to change its stamp |
