@@ -167,6 +167,11 @@ silently revert their fix.
 stack over stock upstream. Merging it moves `neev/base-<tag>` off the tag, and
 the next run stops rather than rewind it. Close it instead.
 
+It is opened as a **draft** for exactly this reason — a draft cannot be merged
+without being marked ready first. If you find yourself about to click that,
+stop: nothing about the release needs it. When one has been merged anyway,
+delete `neev/base-<tag>` and re-run; the tool recreates it from the tag.
+
 Nothing pushed to the fork references anything upstream — not the pull request
 body, not commit messages (cherry-picks omit `-x`), not ref names. Provenance
 lives here, in the lock file and the release notes.

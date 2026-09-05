@@ -606,3 +606,19 @@ class BaseBranchTest(unittest.TestCase):
         self.assertIn("never merge it", str(cm.exception))
         # The thing that moved it must survive.
         self.assertEqual(self._remote_base(), self.moved)
+
+
+class ReviewPrIsDraftTest(unittest.TestCase):
+    """The review pull request is opened as a draft so it cannot be merged.
+
+    Merging it moves neev/base-<tag> off the upstream tag, which stops the next
+    run. It has happened on every release cut so far.
+    """
+
+    def test_create_passes_draft(self) -> None:
+        import inspect
+        src = inspect.getsource(stack.push_and_review)
+        self.assertIn('"--draft"', src)
+        # and only on create -- an edit must not try to draft an existing PR
+        edit = src[src.index('"pr", "edit"'):src.index('"pr", "create"')]
+        self.assertNotIn('"--draft"', edit)

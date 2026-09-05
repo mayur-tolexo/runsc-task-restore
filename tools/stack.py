@@ -518,9 +518,12 @@ def push_and_review(manifest: Manifest, lock: Lock, repo: str,
         run(["gh", "pr", "edit", existing, "--repo", fork, "--title", title,
              "--body", body])
         return existing
+    # Opened as a draft: this pull request exists to be read, and merging it moves
+    # the base branch off the tag and breaks the next run. A draft cannot be merged
+    # without deliberately marking it ready, which is the point.
     return run(["gh", "pr", "create", "--repo", fork, "--base",
                 manifest.base_branch, "--head", manifest.branch,
-                "--title", title, "--body", body])
+                "--title", title, "--body", body, "--draft"])
 
 
 def prepare_checkout(gvisor: str | None, stack: tempfile.TemporaryDirectory
