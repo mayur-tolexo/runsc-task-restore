@@ -622,3 +622,50 @@ class ReviewPrIsDraftTest(unittest.TestCase):
         # and only on create -- an edit must not try to draft an existing PR
         edit = src[src.index('"pr", "edit"'):src.index('"pr", "create"')]
         self.assertNotIn('"--draft"', edit)
+
+
+class RebasedRefExistsTest(unittest.TestCase):
+    """A rebased ref renamed out from under a frozen manifest must be caught."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory(prefix="ref-test-")
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+        self.remote = str(root / "remote.git")
+        subprocess.run(["git", "init", "--quiet", "--bare", self.remote], check=True)
+        work = str(root / "work")
+        Path(work).mkdir()
+        _git(work, "init", "--quiet", "-b", "master")
+        _commit(work, "a.txt", "one\n", "one")
+        _git(work, "push", "--quiet", self.remote, "master:refs/heads/neev/cr-20260822")
+        self.dir = root
+
+    def _manifest(self, ref: str) -> stack.Manifest:
+        path = self.dir / "m.yaml"
+        path.write_text(yaml.safe_dump({
+            "tag": "gvisor-cr-test", "base": "release-test.0", "frozen": True,
+            "stack": [{"pr": 13326, "source": "a/b", "why": "w", "pick": ["aaa"],
+                       "rebased": {"ref": ref, "map": {"aaa": "bbb"}}}],
+        }, sort_keys=False))
+        return stack.parse_manifest(path)
+
+    def test_existing_ref_reports_nothing(self) -> None:
+        self.assertEqual(
+            stack.check_rebased_refs(self._manifest("neev/cr-20260822"), self.remote), [])
+
+    def test_renamed_ref_is_reported(self) -> None:
+        missing = stack.check_rebased_refs(
+            self._manifest("pr13326-pr14277-20260822"), self.remote)
+        self.assertEqual(len(missing), 1)
+        self.assertIn("pr13326-pr14277-20260822", missing[0])
+
+    def test_frozen_does_not_skip_the_check(self) -> None:
+        """The frozen gate must not short-circuit this."""
+        path = self.dir / "frozen.yaml"
+        path.write_text(yaml.safe_dump({
+            "tag": "gvisor-cr-test", "base": "release-test.0", "frozen": True,
+            "stack": [{"pr": 1, "source": "a/b", "why": "w", "pick": ["aaa"],
+                       "rebased": {"ref": "gone", "map": {"aaa": "bbb"}}}],
+        }, sort_keys=False))
+        self.assertEqual(
+            stack.main([str(path), "--check-refs", "--fork", self.remote]), 1)

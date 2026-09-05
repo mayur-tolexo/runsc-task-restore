@@ -16,7 +16,7 @@ stack:
       # 7a438259cb predates upstream's own CreateWithFSRestore API and has
       # never cherry-picked cleanly onto any release tag. b2995c8005 is that
       # change adapted to the current API, kept on the fork.
-      ref: pr13326-pr14277-20260822
+      ref: neev/cr-20260822
       map:
         7a438259cb: b2995c8005
 
