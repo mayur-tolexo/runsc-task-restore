@@ -1,98 +1,180 @@
 # Cutting a release
 
-A release is one file. `releases/<tag>.yaml` names an upstream gVisor release
-tag and the commits taken from each upstream pull request; everything else —
-the fork branch, the review PR, both binaries, the checksums, the notes — is
-derived from it.
+A release is one file. `releases/<tag>.yaml` names an upstream gVisor release tag
+and, per upstream pull request, exactly which commits to take. Everything else —
+the fork branch, the review pull request, both binaries, the checksums, the
+release notes — is derived from it.
 
-## Cut a new release
+Nothing here needs prior knowledge of how a previous release was built. If the
+manifest is right, the pipeline produces the same bytes every time.
+
+## Before you start
+
+| You need | Why |
+|---|---|
+| Python 3 with `pyyaml` | `tools/stack.py` |
+| `gh`, authenticated | reads pull request commits, opens the review pull request |
+| A gVisor clone (optional) | `--gvisor` makes local runs fast; without it the tool clones one |
+| `GVISOR_FORK_TOKEN` in repo secrets | CI pushes to the fork; `GITHUB_TOKEN` cannot write cross-repo. Fine-grained, `contents:write` + `pull_requests:write` on the fork only |
+
+The fork's ruleset must not block the pipeline's own refs. It force-updates
+`neev/cr-*` and `neev/mirror/*` whenever a stack changes, so exclude `neev/**`
+from any `non_fast_forward` or `deletion` rule, or give the release identity a
+bypass. It never force-pushes `neev/base-*`.
+
+## Add a pull request to the next release
 
 1. Copy the newest manifest to `releases/gvisor-cr-<date>.yaml`. Set `base:` to
-   the upstream release tag you want and `supersedes:` to the previous release.
-2. Re-pin every open pull request. `pick` and `skip` together must name every
-   commit GitHub reports on the PR head, or the tool refuses to build.
-3. Build it locally and write the lock file:
+   the upstream release tag you want, and `supersedes:` to the release this one
+   follows.
+
+2. Add an entry for the pull request:
+
+   ```yaml
+     - pr: 14428
+       source: google/gvisor
+       why: bound the io drain in shim delete
+       pick: [c04c9cbc2f]
+       skip:
+         - 91b6d56014  # merge of master into the branch, not a change
+   ```
+
+   `pick` and `skip` together must name **every** commit GitHub reports on that
+   pull request's head. The tool refuses to build otherwise. That is deliberate:
+   an open pull request gaining a commit becomes a loud failure instead of a
+   silent change in what ships.
+
+3. Re-pin every other open pull request in the manifest. Their commits move
+   whenever the author rebases.
+
+4. Build it and write the lock:
 
    ```
    python3 tools/stack.py releases/gvisor-cr-<date>.yaml \
      --gvisor ~/path/to/gvisor --dry-run --write-lock
    ```
 
-   `--gvisor` reuses an existing clone through a throwaway worktree; without it
-   the tool clones gVisor itself. Commit the manifest and the lock together.
-4. Open the pull request. `stack-check` re-runs the same build and fails if the
-   lock does not match, so the SHAs in the diff are the SHAs that will ship.
-5. Merge. `release` combines the stack, pushes `neev/cr-<date>` to the fork,
-   opens the review PR against a pristine copy of the base tag, builds both
-   arches from the exact commit, and creates a **draft** release.
-6. Verify the draft's own binaries on kind, then publish:
+   Commit the manifest and the lock together. The lock is the promise of what
+   the tag contains; because cherry-picks are deterministic, the SHAs in the
+   diff are the SHAs that will ship.
 
-   ```
-   gh release edit gvisor-cr-<date> --repo mayur-tolexo/runsc-task-restore --draft=false
-   ```
+5. Open the pull request. `stack-check` re-runs the same build and fails if the
+   lock does not match.
 
-7. **Freeze the manifest in the same breath.** Set `frozen: true` on it and
-   commit. A manifest pins commits on open pull requests, and those move — the
-   moment one is rebased, an unfrozen published manifest fails its own gate and
-   takes every later pull request touching `releases/` down with it. Freezing
-   also encodes the real rule: those binaries are in use, and a checkpoint is
-   only readable by the build that wrote it.
+6. Merge it. `release` combines the stack, pushes the fork branches, opens the
+   review pull request, builds both arches from the exact commit, and creates a
+   **draft** release. Roughly 15 minutes.
+
+7. Verify the draft (below), then publish and freeze.
+
+## Manifest reference
+
+| Field | Meaning |
+|---|---|
+| `tag` | release tag, e.g. `gvisor-cr-20260831` |
+| `base` | upstream release tag the stack sits on |
+| `supersedes` | previous release; drives the "does not replace" note |
+| `frozen` | set once published — refuses to rebuild |
+| `notes` | free prose appended to the generated release notes |
+| `stack[].pr` | upstream pull request number |
+| `stack[].source` | repo holding it, e.g. `google/gvisor` |
+| `stack[].why` | one line; becomes a release-note bullet and a review heading |
+| `stack[].pick` | commits to take, upstream SHAs |
+| `stack[].skip` | commits deliberately not taken — always comment the reason |
+| `stack[].rebased` | substitute a hand-adapted commit; see below |
 
 ## When a commit will not apply
 
-Some changes cannot be cherry-picked at all. PR 13326 predates upstream's own
-`CreateWithFSRestore` API and has never applied cleanly to any release tag; what
-actually ships is a hand-adapted equivalent kept on the fork. Record that with
-`rebased`:
+Some changes cannot be cherry-picked onto a newer base at all — upstream moved
+the code they touch. Adapt the change by hand, push it to the fork, and point
+the manifest at it:
 
-```yaml
-  - pr: 13326
-    source: google/gvisor
-    why: Kubernetes pod checkpoint/restore via annotations
-    pick: [7a438259cb]
-    rebased:
-      ref: pr13326-pr14277-20260822
-      map:
-        7a438259cb: b2995c8005
+1. Build the stack up to the failing commit in a worktree off the base tag,
+   cherry-pick it, and resolve the conflict.
+2. Push the resulting branch to the fork as `neev/adapted/<base tag>`.
+3. Reference the adapted commit:
+
+   ```yaml
+       rebased:
+         ref: neev/adapted/release-20260831.0
+         map:
+           c04c9cbc2f: 1562639f91   # upstream commit: adapted commit
+   ```
+
+The upstream commit stays pinned, so exhaustiveness is still checked against the
+upstream pull request and a moved pull request still fails. The lock records
+`upstream`, `applied` and `cherry` for every commit, so the chain is never lost.
+
+Resolve conflicts by preserving both sides unless you have a reason not to.
+Upstream often fixes the same bug differently; taking one side wholesale can
+silently revert their fix.
+
+## The fork
+
+| Ref | Holds |
+|---|---|
+| `neev/base-<tag>` | pristine copy of the upstream tag — the review pull request's base |
+| `neev/cr-<date>` | the stack |
+| `neev/mirror/<tag>/NN` | each entry's last picked commit, so inputs outlive the pull requests |
+| `neev/adapted/<tag>` | hand-adapted commits referenced by `rebased` |
+
+**Never merge the review pull request.** It is a review artifact: its diff is the
+stack over stock upstream. Merging it moves `neev/base-<tag>` off the tag, and
+the next run stops rather than rewind it. Close it instead.
+
+Nothing pushed to the fork references anything upstream — not the pull request
+body, not commit messages (cherry-picks omit `-x`), not ref names. Provenance
+lives here, in the lock file and the release notes.
+
+## Verify a draft before publishing
+
+Install the draft's own binaries on a kind node, then:
+
+| Check | Expect |
+|---|---|
+| `kubectl exec <pod> -- dmesg \| head -1` | `Starting gVisor...` |
+| `runsc update --cpu-quota=800000 <sandbox>` | `nproc` grows, 0 restarts |
+| in-place pod resize | `nproc` tracks the new limit, 0 restarts |
+| create/delete several pods | shim process count returns to baseline |
+| `ctr -n k8s.io tasks checkpoint --image-path ...` | `checkpoint.img`, `pages.img` written |
+| restore pod with `dev.gvisor.internal.restore.host-image-path` | carries the source's in-memory state |
+
+Write a marker into the source pod before checkpointing and read it back in the
+restored pod. That is the only check that proves restore rather than a cold boot.
+
+## Publish, then freeze
+
+```
+gh release edit gvisor-cr-<date> --repo mayur-tolexo/runsc-task-restore --draft=false
 ```
 
-The adapted commit must be on a branch pushed to the fork, so a release stays
-rebuildable from remotes alone. Exhaustiveness is still checked against the
-upstream pull request, so a substituted entry still fails when that PR moves.
+Then set `frozen: true` on the manifest and commit it, in the same sitting. A
+manifest pins commits on open pull requests; the moment one is rebased, an
+unfrozen published manifest fails its own gate and takes every later pull
+request touching `releases/` with it. Freezing also encodes the real rule: those
+binaries are in use, and a checkpoint is only readable by the build that wrote
+it.
 
-## The fork's pull requests carry no upstream references
-
-Nothing pushed to the fork references anything upstream:
-
-| on the fork | how |
-|---|---|
-| review pull request | describes the stack by purpose and by branch SHAs only |
-| commit messages | cherry-picks omit `-x`, so no "cherry picked from commit" trailer |
-| mirror refs | `neev/mirror/<tag>/NN`, numbered by position, never by pull request |
-
-Provenance lives here instead, in `releases/<tag>.lock.yaml` and the generated
-release notes. The lock records, per commit, the upstream SHA, the commit
-actually applied, and what it became on the branch — so the link is never lost,
-it just is not carried on the fork.
-
-## Rules the tool enforces
+## What the pipeline enforces
 
 | Rule | Why |
 |---|---|
-| `pick` + `skip` cover every commit on the PR head | an open PR gaining a commit must fail, not silently change what ships |
-| a committed lock must match the rebuilt stack | a tag's contents must not move after the fact |
-| `frozen: true` refuses to rebuild | published builds must stay bit-identical: a checkpoint is only readable by the build that wrote it |
-| both arches must build before anything is uploaded | a half-uploaded release used to drop an arch from `SHA256SUMS` |
-| the release is created as a draft | a bad release is effectively permanent |
+| `pick` + `skip` cover every commit on the head | a moved pull request must fail, not silently change what ships |
+| the lock must match the rebuilt stack | a tag's contents must not move after the fact |
+| `frozen` refuses to rebuild | published builds stay bit-identical |
+| both arches build before anything uploads | a half-uploaded release once dropped an arch from `SHA256SUMS` |
+| the release is a draft | a bad release is effectively permanent |
+| the base branch is never force-pushed | force would discard whatever moved it |
 
-## Prerequisite
+## When it fails
 
-`GVISOR_FORK_TOKEN` — a fine-grained token with `contents:write` and
-`pull_requests:write` on `mayur-tolexo/gvisor` only. `GITHUB_TOKEN` cannot write
-to another repository.
-
-## Never rebuild a published release
-
-Every published build must stay installed for as long as any checkpoint taken
-under it needs to restore. `gvisor-cr-20260817` and `gvisor-cr-20260822` are
-recorded as frozen manifests for provenance only.
+| Message | Cause | Fix |
+|---|---|---|
+| `X is not a commit on this pull request head` | the pull request was rebased | re-pin `pick`/`skip` from `gh pr view N --json commits` |
+| `neither pick nor skip` | the pull request gained a commit | pick it, or skip it with a reason |
+| `does not apply cleanly onto this base` | upstream moved the code | adapt by hand, use `rebased` |
+| `lock does not match` | inputs changed since the lock was written | rebuild with `--write-lock`; if the tag is published, freeze it instead |
+| `is frozen` | rebuilding a published release | intended — cut a new tag |
+| `base-<tag> is at X, not the base tag` | the review pull request was merged into it | reset or delete that branch; never merge the review pull request |
+| `Cannot force-push to this branch` | fork ruleset covers `neev/**` | exclude `neev/**`, or add a bypass |
+| `without \`workflow\` scope` | a mirrored commit changes a workflow file | mirror the last *picked* commit, not the head — the tool already does |
