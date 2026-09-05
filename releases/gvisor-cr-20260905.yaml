@@ -1,11 +1,13 @@
 tag: gvisor-cr-20260905
 base: release-20260824.0
 supersedes: gvisor-cr-20260822
-# Temporarily unfrozen to restamp, same as gvisor-cr-20260831: the binaries were
-# built before the build job fetched upstream's tags, so runsc reported an older
-# base than this manifest names. Nothing has ever run on this build -- no node
-# carries it and no RuntimeClass names it -- so no checkpoint exists that the
-# restamped binary could fail to read. Re-freeze once the rebuild is verified.
+# Published 2026-09-05. Frozen -- and, unlike gvisor-cr-20260831, it cannot be
+# restamped: it pins the pre-rebase commits of the CPU-resize pull request, which
+# were rebased away upstream the same day, so the exhaustiveness gate rejects any
+# rebuild. Its runsc therefore reports release-20260817.0-78-g04c6dc24061f rather
+# than the release-20260824.0-8-g04c6dc24061f in the notes and lock. Same commit,
+# cosmetic only; the binaries are verified and gvisor-cr-20260831 supersedes it.
+frozen: true
 
 stack:
   - pr: 13326
