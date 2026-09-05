@@ -1,9 +1,11 @@
 tag: gvisor-cr-20260905
 base: release-20260824.0
 supersedes: gvisor-cr-20260822
-# Published 2026-09-05. Frozen: these binaries are in use and a checkpoint
-# is only readable by the build that wrote it.
-frozen: true
+# Temporarily unfrozen to restamp, same as gvisor-cr-20260831: the binaries were
+# built before the build job fetched upstream's tags, so runsc reported an older
+# base than this manifest names. Nothing has ever run on this build -- no node
+# carries it and no RuntimeClass names it -- so no checkpoint exists that the
+# restamped binary could fail to read. Re-freeze once the rebuild is verified.
 
 stack:
   - pr: 13326
