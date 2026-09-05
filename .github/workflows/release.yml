@@ -1,0 +1,211 @@
+name: release
+
+# One run produces one release: combine the stack, build both arches from the
+# exact commit the combine step produced, then attach everything to a single
+# draft. Nothing is published without a human -- a checkpoint is only readable
+# by the build that wrote it, so a bad release is effectively permanent.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'releases/*.yaml'
+      - '!releases/*.lock.yaml'
+  workflow_dispatch:
+    inputs:
+      manifest:
+        description: "Manifest to release, e.g. releases/gvisor-cr-20260905.yaml"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  combine:
+    name: combine
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      manifest: ${{ steps.pick.outputs.manifest }}
+      tag: ${{ steps.build.outputs.tag }}
+      branch_sha: ${{ steps.build.outputs.branch_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install --quiet pyyaml
+
+      - name: Pick the manifest to release
+        id: pick
+        env:
+          INPUT_MANIFEST: ${{ inputs.manifest }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          if [ -n "${INPUT_MANIFEST:-}" ]; then
+            manifest="$INPUT_MANIFEST"
+          else
+            case "$BEFORE" in
+              ""|0000000000000000000000000000000000000000) BEFORE="HEAD~1" ;;
+            esac
+            manifest="$(git diff --name-only "$BEFORE" "${{ github.sha }}" \
+              -- 'releases/*.yaml' | grep -v '\.lock\.yaml$')"
+          fi
+          # A commit may touch only frozen manifests -- the backfill commit does.
+          # That is a no-op, not a failure.
+          releasable=""
+          for m in $manifest; do
+            if python3 -c "import sys,yaml; sys.exit(0 if yaml.safe_load(open(sys.argv[1])).get('frozen') else 1)" "$m"; then
+              echo "skipping frozen $m"
+            else
+              releasable="$m"
+              break
+            fi
+          done
+          [ -n "$releasable" ] || echo "nothing releasable changed"
+          echo "manifest=$releasable" >> "$GITHUB_OUTPUT"
+
+      # The fork is a different repository, which GITHUB_TOKEN cannot write to;
+      # this token is scoped to that fork and nothing else.
+      - name: Authorise pushes to the gVisor fork
+        if: steps.pick.outputs.manifest != ''
+        env:
+          GH_TOKEN: ${{ secrets.GVISOR_FORK_TOKEN }}
+        run: gh auth setup-git
+
+      - name: Combine the stack and open the review pull request
+        id: build
+        if: steps.pick.outputs.manifest != ''
+        env:
+          GH_TOKEN: ${{ secrets.GVISOR_FORK_TOKEN }}
+          MANIFEST: ${{ steps.pick.outputs.manifest }}
+        run: |
+          set -euo pipefail
+          python3 tools/stack.py "$MANIFEST" | tee /tmp/stack.json
+          python3 - <<'PY' >> "$GITHUB_OUTPUT"
+          import json
+          result = json.load(open("/tmp/stack.json"))
+          print(f"tag={result['tag']}")
+          print(f"branch_sha={result['branch_sha']}")
+          PY
+
+  build:
+    name: build ${{ matrix.arch }}
+    needs: combine
+    if: needs.combine.outputs.branch_sha != ''
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          sudo docker image prune -af || true
+          df -h /
+
+      - name: Check out the exact commit the combine step produced
+        env:
+          BRANCH_SHA: ${{ needs.combine.outputs.branch_sha }}
+        run: |
+          set -euxo pipefail
+          git clone --filter=blob:none \
+            https://github.com/mayur-tolexo/gvisor.git gvisor
+          cd gvisor
+          git fetch origin "$BRANCH_SHA"
+          git checkout --detach "$BRANCH_SHA"
+          # Pinning the SHA rather than the branch keeps the build honest even
+          # if the branch is moved while this run is in flight.
+          test "$(git rev-parse HEAD)" = "$BRANCH_SHA"
+
+      - name: Map arch to gVisor ARCH
+        run: |
+          case "${{ matrix.arch }}" in
+            amd64) echo "GV_ARCH=x86_64"  >> "$GITHUB_ENV" ;;
+            arm64) echo "GV_ARCH=aarch64" >> "$GITHUB_ENV" ;;
+            *) echo "unknown arch"; exit 1 ;;
+          esac
+
+      - name: Build runsc + shim (native, bazel-in-Docker)
+        run: ARCH="$GV_ARCH" ./scripts/build-cr-binaries.sh "$PWD/gvisor" "$PWD/out"
+
+      - name: Rename for release
+        run: |
+          set -euxo pipefail
+          cd out
+          mv runsc "runsc-linux-${{ matrix.arch }}"
+          mv containerd-shim-runsc-v1 "containerd-shim-runsc-v1-linux-${{ matrix.arch }}"
+          file runsc-linux-* containerd-shim-runsc-v1-linux-*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ matrix.arch }}
+          path: out/*-linux-${{ matrix.arch }}
+          if-no-files-found: error
+
+  publish:
+    name: draft release
+    needs: [combine, build]
+    if: needs.combine.outputs.branch_sha != ''
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install --quiet pyyaml
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: binaries-*
+          merge-multiple: true
+          path: out
+
+      - name: Checksum every binary at once
+        run: |
+          set -euxo pipefail
+          cd out
+          # One pass over all four binaries. The per-arch workflow this replaces
+          # merged into an existing asset instead, which silently dropped an
+          # arch whenever one upload was missing.
+          sha256sum runsc-linux-amd64 runsc-linux-arm64 \
+            containerd-shim-runsc-v1-linux-amd64 \
+            containerd-shim-runsc-v1-linux-arm64 | tee SHA256SUMS
+
+      - name: Generate release notes
+        env:
+          MANIFEST: ${{ needs.combine.outputs.manifest }}
+        run: python3 tools/notes.py "$MANIFEST" > /tmp/notes.md
+
+      - name: Create or update the draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.combine.outputs.tag }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euxo pipefail
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            gh release edit "$TAG" --repo "$REPO" --notes-file /tmp/notes.md
+          else
+            gh release create "$TAG" --repo "$REPO" --draft --title "$TAG" \
+              --notes-file /tmp/notes.md
+          fi
+          gh release upload "$TAG" --repo "$REPO" --clobber \
+            out/runsc-linux-amd64 out/runsc-linux-arm64 \
+            out/containerd-shim-runsc-v1-linux-amd64 \
+            out/containerd-shim-runsc-v1-linux-arm64 \
+            out/SHA256SUMS
+          {
+            echo "### draft release \`$TAG\`"
+            echo "Verify on kind, then publish:"
+            echo '```'
+            echo "gh release edit $TAG --repo $REPO --draft=false"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

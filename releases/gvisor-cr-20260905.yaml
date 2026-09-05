@@ -1,0 +1,50 @@
+tag: gvisor-cr-20260905
+base: release-20260824.0
+supersedes: gvisor-cr-20260822
+
+stack:
+  - pr: 13326
+    source: google/gvisor
+    why: Kubernetes pod checkpoint/restore via annotations
+    pick: [7a438259cb]
+    rebased:
+      # 7a438259cb predates upstream's own CreateWithFSRestore API and has
+      # never cherry-picked cleanly onto any release tag. b2995c8005 is that
+      # change adapted to the current API, kept on the fork.
+      ref: pr13326-pr14277-20260822
+      map:
+        7a438259cb: b2995c8005
+
+  - pr: 14277
+    source: google/gvisor
+    why: update the sentry CPU count on live cgroup CPU changes
+    pick:
+      - 7ef5634c92
+      - 5b5c876925
+      - c87c909826
+      - e8994c8136
+
+  - pr: 14072
+    source: google/gvisor
+    why: do not dereference a nil ThreadGroup when joining a PID namespace
+    pick:
+      - 660192acfc
+      - 1f9cec32e3
+    skip:
+      - a48fad62ef  # chore: trigger signature verification, no code change
+
+  - pr: 14428
+    source: google/gvisor
+    why: bound the io drain in shim delete, release stdio when a created container stops
+    pick:
+      - c04c9cbc2f
+    skip:
+      - 91b6d56014  # merge of master into the PR branch, not a change
+
+notes: |
+  What changed since gvisor-cr-20260822
+
+  Rebased onto release-20260824.0 and added two upstream fixes: PR 14072 stops a
+  nil ThreadGroup dereference when a subcontainer joins a PID namespace, and PR
+  14428 bounds the io drain in shim delete so a created-but-never-started
+  container releases its stdio instead of blocking the delete.

@@ -1,0 +1,82 @@
+name: stack-check
+
+# Gate on the manifest, not on the binaries. Runs the combine step without
+# pushing anything, so a pull request that moved, a commit that is neither
+# picked nor skipped, or a cherry-pick that no longer applies fails here in
+# minutes instead of after a multi-hour bazel build.
+on:
+  pull_request:
+    paths:
+      - 'releases/**'
+      - 'tools/**'
+      - '.github/workflows/stack-check.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: tool tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install --quiet pyyaml
+      - name: Run the stack tool test suite
+        working-directory: tools
+        run: python -m unittest test_stack -v
+
+  dry-run:
+    name: dry-run changed manifests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install --quiet pyyaml
+
+      - name: Collect the manifests this pull request touches
+        id: changed
+        run: |
+          set -euo pipefail
+          git fetch --quiet origin "${{ github.base_ref }}"
+          # Lock files are outputs; only a manifest change is worth rebuilding.
+          changed="$(git diff --name-only \
+            "origin/${{ github.base_ref }}...HEAD" -- 'releases/*.yaml' \
+            | grep -v '\.lock\.yaml$' || true)"
+          {
+            echo "list<<MANIFESTS"
+            echo "$changed"
+            echo "MANIFESTS"
+          } >> "$GITHUB_OUTPUT"
+          echo "manifests: ${changed:-none}"
+
+      - name: Build each stack without pushing
+        if: steps.changed.outputs.list != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MANIFESTS: ${{ steps.changed.outputs.list }}
+        run: |
+          set -euo pipefail
+          while read -r m; do
+            [ -n "$m" ] || continue
+            echo "::group::$m"
+            : > /tmp/stack.json
+            python3 tools/stack.py "$m" --dry-run --skip-frozen | tee /tmp/stack.json
+            echo "::endgroup::"
+            # A frozen manifest builds nothing, so it has no result to report.
+            if [ -s /tmp/stack.json ]; then
+              {
+                echo "### \`$m\`"
+                echo '```json'
+                cat /tmp/stack.json
+                echo '```'
+              } >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done <<< "$MANIFESTS"
