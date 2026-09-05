@@ -1,6 +1,9 @@
 tag: gvisor-cr-20260905
 base: release-20260824.0
 supersedes: gvisor-cr-20260822
+# Published 2026-09-05. Frozen: these binaries are in use and a checkpoint
+# is only readable by the build that wrote it.
+frozen: true
 
 stack:
   - pr: 13326

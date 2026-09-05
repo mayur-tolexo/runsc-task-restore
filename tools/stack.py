@@ -272,6 +272,10 @@ def _cherry_pick(repo: str, sha: str, pr: int) -> str:
 
     Reuses the commit's own author date as the committer date so the resulting
     SHA depends only on the base, the commit, and its position in the stack.
+
+    Deliberately not `-x`: that records "(cherry picked from commit ...)" in the
+    message, putting an upstream commit into every commit on the fork. The
+    upstream link lives in the lock file instead.
     """
     author_date = git(repo, "log", "-1", "--format=%aI", sha)
     env = {
@@ -281,7 +285,7 @@ def _cherry_pick(repo: str, sha: str, pr: int) -> str:
         "GIT_COMMITTER_DATE": author_date,
     }
     try:
-        run(["git", "-C", repo, "cherry-pick", "-x", sha], env=env)
+        run(["git", "-C", repo, "cherry-pick", sha], env=env)
     except CommandError:
         conflicts = git(repo, "diff", "--name-only", "--diff-filter=U",
                         check=False)
@@ -398,7 +402,12 @@ def reconcile_lock(manifest: Manifest, lock: Lock, *, write: bool,
 
 
 def pr_body(manifest: Manifest, lock: Lock) -> str:
-    """Render the review PR body: what was taken from each upstream PR, and why."""
+    """Render the review PR body for the fork.
+
+    Deliberately carries no upstream reference -- not a pull request number, not
+    an upstream commit. Provenance lives in the release repository, in the lock
+    file and the generated release notes.
+    """
     lines = [
         f"Stack for `{manifest.tag}`, built on `{manifest.base}`.",
         "",
@@ -406,16 +415,10 @@ def pr_body(manifest: Manifest, lock: Lock) -> str:
         "",
     ]
     for entry in manifest.stack:
-        lines.append(f"### {entry.source}#{entry.pr} — {entry.why}")
+        lines.append(f"### {entry.why}")
         lines.append("")
         for p in [p for p in lock.picked if p.pr == entry.pr]:
-            if p.applied != p.upstream:
-                lines.append(f"- pick `{p.upstream[:10]}` via adapted "
-                             f"`{p.applied[:10]}` → `{p.cherry[:10]}`")
-            else:
-                lines.append(f"- pick `{p.upstream[:10]}` → `{p.cherry[:10]}`")
-        for prefix in entry.skip:
-            lines.append(f"- skip `{prefix}`")
+            lines.append(f"- `{p.cherry[:10]}`")
         lines.append("")
     lines.append(
         "Generated from the release manifest. Edit the manifest, not this "
@@ -434,6 +437,15 @@ def push_ref(repo: str, url: str, src: str, dst: str) -> None:
     """
     expected = run(["git", "-C", repo, "ls-remote", url, dst]).split("\t")[0]
     git(repo, "push", f"--force-with-lease={dst}:{expected}", url, f"{src}:{dst}")
+
+
+def mirror_ref(manifest: Manifest, index: int) -> str:
+    """Fork ref holding one entry's mirrored input.
+
+    Numbered by position in the stack rather than named after an upstream pull
+    request; the lock file records which commit each one holds.
+    """
+    return f"refs/heads/neev/mirror/{manifest.tag}/{index:02d}"
 
 
 def mirror_target(entry: Entry, lock: Lock) -> str:
@@ -467,9 +479,9 @@ def push_and_review(manifest: Manifest, lock: Lock, repo: str,
     url = f"https://github.com/{fork}.git"
 
     push_ref(repo, url, lock.base_sha, f"refs/heads/{manifest.base_branch}")
-    for entry in manifest.stack:
+    for index, entry in enumerate(manifest.stack, start=1):
         push_ref(repo, url, mirror_target(entry, lock),
-                 f"refs/heads/neev/mirror/pr{entry.pr}")
+                 mirror_ref(manifest, index))
     push_ref(repo, url, lock.branch_sha, f"refs/heads/{manifest.branch}")
 
     title = f"cr stack for {manifest.tag} on {manifest.base}"

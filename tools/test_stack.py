@@ -161,10 +161,13 @@ class BuildTest(unittest.TestCase):
         for p in lock.picked:
             self.assertNotEqual(p.upstream, p.cherry)
 
-    def test_provenance_recorded_in_commit_message(self) -> None:
+    def test_commit_messages_carry_no_upstream_commit(self) -> None:
+        """The fork must not record upstream SHAs in its commit messages."""
         lock = self.fx.build(self.fx.manifest(self.dir))
-        body = _git(self.fx.repo, "log", "-1", "--format=%B", lock.picked[0].cherry)
-        self.assertIn(f"cherry picked from commit {self.fx.c1}", body)
+        for p in lock.picked:
+            body = _git(self.fx.repo, "log", "-1", "--format=%B", p.cherry)
+            self.assertNotIn("cherry picked from", body)
+            self.assertNotIn(p.upstream[:10], body)
 
     def test_deterministic_across_runs(self) -> None:
         """Two builds of one manifest must produce identical SHAs."""
@@ -278,20 +281,36 @@ class FrozenTest(unittest.TestCase):
         self.assertEqual(stack.main([str(path), "--dry-run"]), 1)
 
 
-class NotesTest(unittest.TestCase):
-    """The PR body carries pick/skip provenance a reviewer can check."""
+class ForkPrBodyTest(unittest.TestCase):
+    """The fork's pull requests must not reference anything upstream."""
 
-    def test_body_lists_picks_skips_and_stamp(self) -> None:
-        fx = Fixture()
-        self.addCleanup(fx.close)
+    def setUp(self) -> None:
+        self.fx = Fixture()
+        self.addCleanup(self.fx.close)
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        manifest = fx.manifest(Path(tmp.name))
-        lock = fx.build(manifest)
-        body = stack.pr_body(manifest, lock)
-        self.assertIn(f"pick `{fx.c1[:10]}`", body)
-        self.assertIn(f"skip `{fx.noise[:10]}`", body)
-        self.assertIn(lock.version_stamp, body)
+        self.manifest = self.fx.manifest(Path(tmp.name))
+        self.lock = self.fx.build(self.manifest)
+        self.body = stack.pr_body(self.manifest, self.lock)
+
+    def test_describes_the_stack(self) -> None:
+        self.assertIn(self.manifest.tag, self.body)
+        self.assertIn(self.lock.version_stamp, self.body)
+        for p in self.lock.picked:
+            self.assertIn(f"`{p.cherry[:10]}`", self.body)
+
+    def test_carries_no_upstream_pull_request_number(self) -> None:
+        for entry in self.manifest.stack:
+            self.assertNotIn(str(entry.pr), self.body)
+            self.assertNotIn(entry.source, self.body)
+
+    def test_carries_no_upstream_commit(self) -> None:
+        for p in self.lock.picked:
+            self.assertNotIn(p.upstream[:10], self.body)
+            self.assertNotIn(p.applied[:10], self.body)
+
+    def test_carries_no_skipped_commit(self) -> None:
+        self.assertNotIn(self.fx.noise[:10], self.body)
 
 
 if __name__ == "__main__":
@@ -502,3 +521,30 @@ class MirrorTargetTest(unittest.TestCase):
         for p in self.lock.picked:
             self.assertIn(stack.mirror_target(self.manifest.stack[0], self.lock),
                           [q.upstream for q in self.lock.picked])
+
+
+class MirrorRefTest(unittest.TestCase):
+    """Mirror refs must not be named after an upstream pull request."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        path = Path(self.tmp.name) / "gvisor-cr-20260831.yaml"
+        path.write_text(yaml.safe_dump({
+            "tag": "gvisor-cr-20260831", "base": "release-20260831.0",
+            "stack": [
+                {"pr": 13326, "source": "google/gvisor", "why": "w", "pick": ["aaa"]},
+                {"pr": 14428, "source": "google/gvisor", "why": "w", "pick": ["bbb"]},
+            ],
+        }, sort_keys=False))
+        self.manifest = stack.parse_manifest(path)
+
+    def test_ref_is_numbered_not_pr_named(self) -> None:
+        first = stack.mirror_ref(self.manifest, 1)
+        second = stack.mirror_ref(self.manifest, 2)
+        self.assertEqual(first, "refs/heads/neev/mirror/gvisor-cr-20260831/01")
+        self.assertEqual(second, "refs/heads/neev/mirror/gvisor-cr-20260831/02")
+
+    def test_ref_carries_no_pull_request_number(self) -> None:
+        for i, entry in enumerate(self.manifest.stack, start=1):
+            self.assertNotIn(str(entry.pr), stack.mirror_ref(self.manifest, i))

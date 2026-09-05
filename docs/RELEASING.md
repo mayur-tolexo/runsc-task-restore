@@ -31,6 +31,13 @@ derived from it.
    gh release edit gvisor-cr-<date> --repo mayur-tolexo/runsc-task-restore --draft=false
    ```
 
+7. **Freeze the manifest in the same breath.** Set `frozen: true` on it and
+   commit. A manifest pins commits on open pull requests, and those move — the
+   moment one is rebased, an unfrozen published manifest fails its own gate and
+   takes every later pull request touching `releases/` down with it. Freezing
+   also encodes the real rule: those binaries are in use, and a checkpoint is
+   only readable by the build that wrote it.
+
 ## When a commit will not apply
 
 Some changes cannot be cherry-picked at all. PR 13326 predates upstream's own
@@ -52,6 +59,21 @@ actually ships is a hand-adapted equivalent kept on the fork. Record that with
 The adapted commit must be on a branch pushed to the fork, so a release stays
 rebuildable from remotes alone. Exhaustiveness is still checked against the
 upstream pull request, so a substituted entry still fails when that PR moves.
+
+## The fork's pull requests carry no upstream references
+
+Nothing pushed to the fork references anything upstream:
+
+| on the fork | how |
+|---|---|
+| review pull request | describes the stack by purpose and by branch SHAs only |
+| commit messages | cherry-picks omit `-x`, so no "cherry picked from commit" trailer |
+| mirror refs | `neev/mirror/<tag>/NN`, numbered by position, never by pull request |
+
+Provenance lives here instead, in `releases/<tag>.lock.yaml` and the generated
+release notes. The lock records, per commit, the upstream SHA, the commit
+actually applied, and what it became on the branch — so the link is never lost,
+it just is not carried on the fork.
 
 ## Rules the tool enforces
 
