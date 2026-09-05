@@ -51,20 +51,33 @@ jobs:
               ""|0000000000000000000000000000000000000000) BEFORE="HEAD~1" ;;
             esac
             manifest="$(git diff --name-only "$BEFORE" "${{ github.sha }}" \
-              -- 'releases/*.yaml' | grep -v '\.lock\.yaml$' | head -1)"
+              -- 'releases/*.yaml' | grep -v '\.lock\.yaml$')"
           fi
-          [ -n "$manifest" ] || { echo "no manifest changed"; exit 1; }
-          echo "manifest=$manifest" >> "$GITHUB_OUTPUT"
+          # A commit may touch only frozen manifests -- the backfill commit does.
+          # That is a no-op, not a failure.
+          releasable=""
+          for m in $manifest; do
+            if python3 -c "import sys,yaml; sys.exit(0 if yaml.safe_load(open(sys.argv[1])).get('frozen') else 1)" "$m"; then
+              echo "skipping frozen $m"
+            else
+              releasable="$m"
+              break
+            fi
+          done
+          [ -n "$releasable" ] || echo "nothing releasable changed"
+          echo "manifest=$releasable" >> "$GITHUB_OUTPUT"
 
       # The fork is a different repository, which GITHUB_TOKEN cannot write to;
       # this token is scoped to that fork and nothing else.
       - name: Authorise pushes to the gVisor fork
+        if: steps.pick.outputs.manifest != ''
         env:
           GH_TOKEN: ${{ secrets.GVISOR_FORK_TOKEN }}
         run: gh auth setup-git
 
       - name: Combine the stack and open the review pull request
         id: build
+        if: steps.pick.outputs.manifest != ''
         env:
           GH_TOKEN: ${{ secrets.GVISOR_FORK_TOKEN }}
           MANIFEST: ${{ steps.pick.outputs.manifest }}
@@ -81,6 +94,7 @@ jobs:
   build:
     name: build ${{ matrix.arch }}
     needs: combine
+    if: needs.combine.outputs.branch_sha != ''
     runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     timeout-minutes: 240
     strategy:
@@ -139,6 +153,7 @@ jobs:
   publish:
     name: draft release
     needs: [combine, build]
+    if: needs.combine.outputs.branch_sha != ''
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

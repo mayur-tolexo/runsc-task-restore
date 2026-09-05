@@ -431,3 +431,25 @@ class PushTest(unittest.TestCase):
         _git(self.repo, "reset", "--hard", "--quiet", self.first)
         stack.push_ref(self.repo, self.remote, "master", "refs/heads/probe")
         self.assertEqual(self._remote_sha(), self.first)
+
+
+class SkipFrozenTest(unittest.TestCase):
+    """Checking a batch of manifests steps over frozen ones without failing."""
+
+    def _frozen_manifest(self) -> Path:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "frozen.yaml"
+        path.write_text(yaml.safe_dump({
+            "tag": "gvisor-cr-20260822", "base": "release-20260817.0",
+            "frozen": True,
+            "stack": [{"pr": 1, "source": "a/b", "why": "w", "pick": ["aaa"]}],
+        }, sort_keys=False))
+        return path
+
+    def test_skip_frozen_succeeds(self) -> None:
+        self.assertEqual(
+            stack.main([str(self._frozen_manifest()), "--dry-run", "--skip-frozen"]), 0)
+
+    def test_releasing_a_frozen_manifest_still_fails(self) -> None:
+        self.assertEqual(stack.main([str(self._frozen_manifest()), "--dry-run"]), 1)

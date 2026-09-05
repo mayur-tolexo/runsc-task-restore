@@ -500,10 +500,17 @@ def main(argv: list[str] | None = None) -> int:
                     help="write the lock file instead of only checking it")
     ap.add_argument("--allow-rewrite", action="store_true",
                     help="permit a lock mismatch (unpublished tags only)")
+    ap.add_argument("--skip-frozen", action="store_true",
+                    help="treat a frozen manifest as nothing to do, not an error")
     args = ap.parse_args(argv)
 
     try:
         manifest = parse_manifest(args.manifest)
+        # A frozen manifest is a record of a published build. Checking a batch
+        # of manifests should step over it; releasing one must still fail.
+        if manifest.frozen and args.skip_frozen:
+            print(f"{args.manifest}: frozen, nothing to build", file=sys.stderr)
+            return 0
         if manifest.frozen and not args.allow_rewrite:
             raise StackError(
                 f"{args.manifest} is frozen: {manifest.tag} is published and "

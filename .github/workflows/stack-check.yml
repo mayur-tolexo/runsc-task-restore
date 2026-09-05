@@ -67,12 +67,16 @@ jobs:
           while read -r m; do
             [ -n "$m" ] || continue
             echo "::group::$m"
-            python3 tools/stack.py "$m" --dry-run | tee /tmp/stack.json
+            : > /tmp/stack.json
+            python3 tools/stack.py "$m" --dry-run --skip-frozen | tee /tmp/stack.json
             echo "::endgroup::"
-            {
-              echo "### \`$m\`"
-              echo '```json'
-              cat /tmp/stack.json
-              echo '```'
-            } >> "$GITHUB_STEP_SUMMARY"
+            # A frozen manifest builds nothing, so it has no result to report.
+            if [ -s /tmp/stack.json ]; then
+              {
+                echo "### \`$m\`"
+                echo '```json'
+                cat /tmp/stack.json
+                echo '```'
+              } >> "$GITHUB_STEP_SUMMARY"
+            fi
           done <<< "$MANIFESTS"
