@@ -436,6 +436,19 @@ def push_ref(repo: str, url: str, src: str, dst: str) -> None:
     git(repo, "push", f"--force-with-lease={dst}:{expected}", url, f"{src}:{dst}")
 
 
+def mirror_target(entry: Entry, lock: Lock) -> str:
+    """The upstream commit a pull request's mirror should point at.
+
+    The last commit actually picked, never the pull request head: a head can end
+    in commits the manifest rejects, and mirroring those preserves what we
+    deliberately did not ship.
+    """
+    picked = [p.upstream for p in lock.picked if p.pr == entry.pr]
+    if not picked:
+        raise StackError(f"PR {entry.pr}: nothing picked, cannot mirror")
+    return picked[-1]
+
+
 def push_and_review(manifest: Manifest, lock: Lock, repo: str,
                     fork: str) -> str | None:
     """Push the base copy, mirrors and stack branch, then open or update the PR.
@@ -444,12 +457,18 @@ def push_and_review(manifest: Manifest, lock: Lock, repo: str,
     request can be closed and its fork deleted; a checkpoint taken under a build
     stays readable only by that exact build, so the inputs have to outlive the
     pull requests they came from.
+
+    Each mirror points at the last commit actually picked, not the pull request
+    head. A head can end in commits the manifest rejects -- a merge of upstream
+    master, say -- and mirroring those both preserves what we deliberately did
+    not ship and drags their workflow-file changes into the push, which GitHub
+    rejects unless the token may write workflows.
     """
     url = f"https://github.com/{fork}.git"
 
     push_ref(repo, url, lock.base_sha, f"refs/heads/{manifest.base_branch}")
     for entry in manifest.stack:
-        push_ref(repo, url, f"refs/neev-stack/pr{entry.pr}",
+        push_ref(repo, url, mirror_target(entry, lock),
                  f"refs/heads/neev/mirror/pr{entry.pr}")
     push_ref(repo, url, lock.branch_sha, f"refs/heads/{manifest.branch}")
 

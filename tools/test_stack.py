@@ -468,3 +468,37 @@ class VersionStampTest(unittest.TestCase):
         lock = fx.build(fx.manifest(Path(tmp.name)))
         suffix = lock.version_stamp.rsplit("-g", 1)[1]
         self.assertEqual(len(suffix), 12, lock.version_stamp)
+
+
+class MirrorTargetTest(unittest.TestCase):
+    """A mirror must not preserve commits the manifest rejected."""
+
+    def setUp(self) -> None:
+        self.fx = Fixture()
+        self.addCleanup(self.fx.close)
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.manifest = self.fx.manifest(Path(self.tmp.name))
+        self.lock = self.fx.build(self.manifest)
+
+    def test_mirrors_the_last_picked_commit(self) -> None:
+        self.assertEqual(stack.mirror_target(self.manifest.stack[0], self.lock),
+                         self.fx.c2)
+
+    def test_does_not_mirror_a_trailing_rejected_commit(self) -> None:
+        """PR 14428 ends in a merge of master; mirroring it broke the push."""
+        m = self.fx.manifest(Path(self.tmp.name), stack=[{
+            "pr": 99, "source": "google/gvisor", "why": "fixture",
+            "pick": [self.fx.c1[:10]],
+            "skip": [self.fx.noise[:10], self.fx.c2[:10]],
+        }])
+        lock = self.fx.build(m)
+        target = stack.mirror_target(m.stack[0], lock)
+        self.assertEqual(target, self.fx.c1)
+        self.assertNotEqual(target, self.fx.c2)
+
+    def test_mirrors_upstream_not_the_adapted_commit(self) -> None:
+        """The fragile input is the upstream commit; the adaptation is ours."""
+        for p in self.lock.picked:
+            self.assertIn(stack.mirror_target(self.manifest.stack[0], self.lock),
+                          [q.upstream for q in self.lock.picked])
