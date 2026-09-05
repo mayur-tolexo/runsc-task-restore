@@ -67,6 +67,14 @@ bypass. It never force-pushes `neev/base-*`.
 
 7. Verify the draft (below), then publish and freeze.
 
+### A note on the version stamp
+
+`runsc --version` on a node must match the `Version stamp` in the release notes.
+gVisor derives its own stamp with `git describe`, so the build clone needs
+upstream's release tags — the fork alone does not carry them. The build job
+fetches them; if a stamp ever reports an older base than the notes, that fetch is
+what went missing.
+
 ## Manifest reference
 
 | Field | Meaning |
