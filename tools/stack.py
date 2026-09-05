@@ -272,6 +272,10 @@ def _cherry_pick(repo: str, sha: str, pr: int) -> str:
 
     Reuses the commit's own author date as the committer date so the resulting
     SHA depends only on the base, the commit, and its position in the stack.
+
+    Deliberately not `-x`: that records "(cherry picked from commit ...)" in the
+    message, putting an upstream commit into every commit on the fork. The
+    upstream link lives in the lock file instead.
     """
     author_date = git(repo, "log", "-1", "--format=%aI", sha)
     env = {
@@ -281,7 +285,7 @@ def _cherry_pick(repo: str, sha: str, pr: int) -> str:
         "GIT_COMMITTER_DATE": author_date,
     }
     try:
-        run(["git", "-C", repo, "cherry-pick", "-x", sha], env=env)
+        run(["git", "-C", repo, "cherry-pick", sha], env=env)
     except CommandError:
         conflicts = git(repo, "diff", "--name-only", "--diff-filter=U",
                         check=False)
@@ -435,6 +439,15 @@ def push_ref(repo: str, url: str, src: str, dst: str) -> None:
     git(repo, "push", f"--force-with-lease={dst}:{expected}", url, f"{src}:{dst}")
 
 
+def mirror_ref(manifest: Manifest, index: int) -> str:
+    """Fork ref holding one entry's mirrored input.
+
+    Numbered by position in the stack rather than named after an upstream pull
+    request; the lock file records which commit each one holds.
+    """
+    return f"refs/heads/neev/mirror/{manifest.tag}/{index:02d}"
+
+
 def mirror_target(entry: Entry, lock: Lock) -> str:
     """The upstream commit a pull request's mirror should point at.
 
@@ -466,9 +479,9 @@ def push_and_review(manifest: Manifest, lock: Lock, repo: str,
     url = f"https://github.com/{fork}.git"
 
     push_ref(repo, url, lock.base_sha, f"refs/heads/{manifest.base_branch}")
-    for entry in manifest.stack:
+    for index, entry in enumerate(manifest.stack, start=1):
         push_ref(repo, url, mirror_target(entry, lock),
-                 f"refs/heads/neev/mirror/pr{entry.pr}")
+                 mirror_ref(manifest, index))
     push_ref(repo, url, lock.branch_sha, f"refs/heads/{manifest.branch}")
 
     title = f"cr stack for {manifest.tag} on {manifest.base}"

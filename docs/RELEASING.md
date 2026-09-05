@@ -62,10 +62,18 @@ upstream pull request, so a substituted entry still fails when that PR moves.
 
 ## The fork's pull requests carry no upstream references
 
-The review pull request opened on `mayur-tolexo/gvisor` names no upstream pull
-request and no upstream commit — it describes the stack by purpose and by the
-commit SHAs on the branch. Provenance lives here instead, in
-`releases/<tag>.lock.yaml` and the generated release notes.
+Nothing pushed to the fork references anything upstream:
+
+| on the fork | how |
+|---|---|
+| review pull request | describes the stack by purpose and by branch SHAs only |
+| commit messages | cherry-picks omit `-x`, so no "cherry picked from commit" trailer |
+| mirror refs | `neev/mirror/<tag>/NN`, numbered by position, never by pull request |
+
+Provenance lives here instead, in `releases/<tag>.lock.yaml` and the generated
+release notes. The lock records, per commit, the upstream SHA, the commit
+actually applied, and what it became on the branch — so the link is never lost,
+it just is not carried on the fork.
 
 ## Rules the tool enforces
 
