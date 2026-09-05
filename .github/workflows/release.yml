@@ -120,6 +120,10 @@ jobs:
             https://github.com/mayur-tolexo/gvisor.git gvisor
           cd gvisor
           git fetch origin "$BRANCH_SHA"
+          # gVisor stamps its own version with `git describe`, and the fork does
+          # not carry upstream's newer release tags -- without these the binary
+          # reports an older base than the release notes claim.
+          git fetch --tags --quiet https://github.com/google/gvisor.git
           git checkout --detach "$BRANCH_SHA"
           # Pinning the SHA rather than the branch keeps the build honest even
           # if the branch is moved while this run is in flight.
