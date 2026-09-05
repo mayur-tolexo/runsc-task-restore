@@ -299,10 +299,14 @@ class ForkPrBodyTest(unittest.TestCase):
         for p in self.lock.picked:
             self.assertIn(f"`{p.cherry[:10]}`", self.body)
 
-    def test_carries_no_upstream_pull_request_number(self) -> None:
+    def test_carries_no_upstream_pull_request_reference(self) -> None:
+        # Matched as a reference, not as a bare number: the body is full of hex
+        # SHAs, and a short SHA contains any two digits often enough to make a
+        # bare-number assertion fail at random.
         for entry in self.manifest.stack:
-            self.assertNotIn(str(entry.pr), self.body)
-            self.assertNotIn(entry.source, self.body)
+            for form in (f"#{entry.pr}", f"PR {entry.pr}", f"pr{entry.pr}",
+                         f"pull/{entry.pr}", entry.source):
+                self.assertNotIn(form.lower(), self.body.lower())
 
     def test_carries_no_upstream_commit(self) -> None:
         for p in self.lock.picked:
@@ -548,3 +552,57 @@ class MirrorRefTest(unittest.TestCase):
     def test_ref_carries_no_pull_request_number(self) -> None:
         for i, entry in enumerate(self.manifest.stack, start=1):
             self.assertNotIn(str(entry.pr), stack.mirror_ref(self.manifest, i))
+
+
+class BaseBranchTest(unittest.TestCase):
+    """The base branch must stay a pristine copy of the tag, and never be forced."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory(prefix="base-test-")
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name)
+
+        self.remote = str(root / "remote.git")
+        subprocess.run(["git", "init", "--quiet", "--bare", self.remote], check=True)
+        self.repo = str(root / "work")
+        Path(self.repo).mkdir()
+        _git(self.repo, "init", "--quiet", "-b", "master")
+        self.base_sha = _commit(self.repo, "a.txt", "one\n", "base")
+        self.moved = _commit(self.repo, "a.txt", "two\n", "merged something")
+
+        path = root / "gvisor-cr-test.yaml"
+        path.write_text(yaml.safe_dump({
+            "tag": "gvisor-cr-test", "base": "release-test.0",
+            "stack": [{"pr": 1, "source": "a/b", "why": "w", "pick": ["aaa"]}],
+        }, sort_keys=False))
+        self.manifest = stack.parse_manifest(path)
+        self.lock = stack.Lock(
+            tag="gvisor-cr-test", base="release-test.0", base_sha=self.base_sha,
+            branch="neev/cr-test", branch_sha=self.base_sha,
+            version_stamp="v", fork="owner/fork", picked=[])
+
+    def _remote_base(self) -> str:
+        out = subprocess.run(
+            ["git", "ls-remote", self.remote,
+             f"refs/heads/{self.manifest.base_branch}"],
+            check=True, text=True, stdout=subprocess.PIPE).stdout
+        return out.split("\t")[0] if out else ""
+
+    def test_creates_it_when_absent(self) -> None:
+        stack.ensure_base_branch(self.repo, self.remote, self.manifest, self.lock)
+        self.assertEqual(self._remote_base(), self.base_sha)
+
+    def test_is_a_no_op_when_already_pristine(self) -> None:
+        stack.ensure_base_branch(self.repo, self.remote, self.manifest, self.lock)
+        stack.ensure_base_branch(self.repo, self.remote, self.manifest, self.lock)
+        self.assertEqual(self._remote_base(), self.base_sha)
+
+    def test_refuses_when_it_has_moved(self) -> None:
+        """Merging the review pull request into it moves it; do not rewind."""
+        _git(self.repo, "push", "--quiet", self.remote,
+             f"{self.moved}:refs/heads/{self.manifest.base_branch}")
+        with self.assertRaises(stack.StackError) as cm:
+            stack.ensure_base_branch(self.repo, self.remote, self.manifest, self.lock)
+        self.assertIn("never merge it", str(cm.exception))
+        # The thing that moved it must survive.
+        self.assertEqual(self._remote_base(), self.moved)

@@ -461,6 +461,31 @@ def mirror_target(entry: Entry, lock: Lock) -> str:
     return picked[-1]
 
 
+def ensure_base_branch(repo: str, url: str, manifest: Manifest,
+                       lock: Lock) -> None:
+    """Create the pristine base branch, or verify it still is one.
+
+    Never force-pushes. The branch exists only to give the review pull request a
+    base that is stock upstream, so the diff is exactly the stack. If it has
+    moved -- merging the review pull request into it does exactly that -- force
+    it back would silently discard whatever moved it, so stop and say so.
+    """
+    ref = f"refs/heads/{manifest.base_branch}"
+    current = run(["git", "-C", repo, "ls-remote", url, ref]).split("\t")[0]
+    if current == lock.base_sha:
+        return
+    if not current:
+        git(repo, "push", url, f"{lock.base_sha}:{ref}")
+        return
+    raise StackError(
+        f"{manifest.base_branch} is at {current[:12]}, not the base tag "
+        f"{manifest.base} ({lock.base_sha[:12]}).\n"
+        f"  It must stay a pristine copy of the tag so the review pull request "
+        f"shows only the stack.\n"
+        f"  The review pull request is a review artifact -- close it, never "
+        f"merge it. Reset or delete the branch and re-run.")
+
+
 def push_and_review(manifest: Manifest, lock: Lock, repo: str,
                     fork: str) -> str | None:
     """Push the base copy, mirrors and stack branch, then open or update the PR.
@@ -478,7 +503,7 @@ def push_and_review(manifest: Manifest, lock: Lock, repo: str,
     """
     url = f"https://github.com/{fork}.git"
 
-    push_ref(repo, url, lock.base_sha, f"refs/heads/{manifest.base_branch}")
+    ensure_base_branch(repo, url, manifest, lock)
     for index, entry in enumerate(manifest.stack, start=1):
         push_ref(repo, url, mirror_target(entry, lock),
                  mirror_ref(manifest, index))
