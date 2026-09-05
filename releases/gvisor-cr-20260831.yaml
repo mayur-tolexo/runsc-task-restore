@@ -1,0 +1,58 @@
+tag: gvisor-cr-20260831
+base: release-20260831.0
+supersedes: gvisor-cr-20260905
+
+stack:
+  - pr: 13326
+    source: google/gvisor
+    why: Kubernetes pod checkpoint/restore via annotations
+    pick: [7a438259cb]
+    rebased:
+      # Predates upstream's own CreateWithFSRestore API, so it has never
+      # cherry-picked cleanly. Re-adapted onto this base; the only conflict left
+      # was a test file where upstream and this change each added independent
+      # tests, and both are kept.
+      ref: neev/adapted/release-20260831.0
+      map:
+        7a438259cb: a49465a547
+
+  - pr: 14277
+    source: google/gvisor
+    why: update the sentry CPU count on live cgroup CPU changes
+    pick:
+      - 70d6103c4a
+      - 24ddb729ca
+      - 6fe819df36
+      - 040bdf99e4
+
+  - pr: 14072
+    source: google/gvisor
+    why: do not dereference a nil ThreadGroup when joining a PID namespace
+    pick:
+      - 660192acfc
+      - 1f9cec32e3
+    skip:
+      - a48fad62ef  # chore: trigger signature verification, no code change
+
+  - pr: 14428
+    source: google/gvisor
+    why: bound the io drain in shim delete, release stdio when a created container stops
+    pick: [c04c9cbc2f]
+    skip:
+      - 91b6d56014  # merge of master into the branch, not a change
+    rebased:
+      # Upstream fixed the same nil-deref at the call site this change removes.
+      # Re-adapted so the close moves into transition(stopped) carrying upstream's
+      # nil guard with it, rather than reverting the upstream fix.
+      ref: neev/adapted/release-20260831.0
+      map:
+        c04c9cbc2f: 1562639f91
+
+notes: |
+  What changed since gvisor-cr-20260905
+
+  Rebased onto release-20260831.0. The CPU-resize work was rebased upstream, so
+  it now applies to this base unchanged. Two changes needed re-adapting against
+  upstream code that moved: the checkpoint/restore shim change, and the shim io
+  drain fix, which upstream had independently patched at one of the same call
+  sites.
