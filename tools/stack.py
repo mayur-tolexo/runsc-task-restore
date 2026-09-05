@@ -398,7 +398,12 @@ def reconcile_lock(manifest: Manifest, lock: Lock, *, write: bool,
 
 
 def pr_body(manifest: Manifest, lock: Lock) -> str:
-    """Render the review PR body: what was taken from each upstream PR, and why."""
+    """Render the review PR body for the fork.
+
+    Deliberately carries no upstream reference -- not a pull request number, not
+    an upstream commit. Provenance lives in the release repository, in the lock
+    file and the generated release notes.
+    """
     lines = [
         f"Stack for `{manifest.tag}`, built on `{manifest.base}`.",
         "",
@@ -406,16 +411,10 @@ def pr_body(manifest: Manifest, lock: Lock) -> str:
         "",
     ]
     for entry in manifest.stack:
-        lines.append(f"### {entry.source}#{entry.pr} — {entry.why}")
+        lines.append(f"### {entry.why}")
         lines.append("")
         for p in [p for p in lock.picked if p.pr == entry.pr]:
-            if p.applied != p.upstream:
-                lines.append(f"- pick `{p.upstream[:10]}` via adapted "
-                             f"`{p.applied[:10]}` → `{p.cherry[:10]}`")
-            else:
-                lines.append(f"- pick `{p.upstream[:10]}` → `{p.cherry[:10]}`")
-        for prefix in entry.skip:
-            lines.append(f"- skip `{prefix}`")
+            lines.append(f"- `{p.cherry[:10]}`")
         lines.append("")
     lines.append(
         "Generated from the release manifest. Edit the manifest, not this "
