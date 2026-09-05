@@ -3,7 +3,7 @@ base: release-20260824.0
 base_sha: 3c5eee17dc45659fb86843531074f38e78e0cc35
 branch: neev/cr-20260905
 branch_sha: 04c6dc24061f60df55af19e8f8afa6794cccae7d
-version_stamp: release-20260824.0-8-g04c6dc2406
+version_stamp: release-20260824.0-8-g04c6dc24061f
 fork: mayur-tolexo/gvisor
 picked:
 - pr: 13326

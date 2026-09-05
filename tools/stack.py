@@ -332,7 +332,7 @@ def build_stack(manifest: Manifest, repo: str, fork: str, *,
         base_sha=base_sha,
         branch=manifest.branch,
         branch_sha=git(repo, "rev-parse", "HEAD"),
-        version_stamp=git(repo, "describe", "--tags", "--long"),
+        version_stamp=git(repo, "describe", "--tags", "--long", "--abbrev=12"),
         fork=fork,
         picked=picked,
     )
@@ -348,6 +348,16 @@ def load_lock(path: Path) -> dict | None:
 def dump_lock(lock: Lock) -> str:
     """Serialise a lock in the stable key order the committed file uses."""
     return yaml.safe_dump(lock.to_dict(), sort_keys=False, default_flow_style=False)
+
+
+def _describe_diff(existing: dict, fresh: dict) -> str:
+    """List the fields where a committed lock and a rebuilt one disagree."""
+    lines = []
+    for key in sorted(set(existing) | set(fresh)):
+        was, now = existing.get(key), fresh.get(key)
+        if was != now:
+            lines.append(f"  {key}:\n    committed: {was}\n    rebuilt:   {now}\n")
+    return "".join(lines)
 
 
 def reconcile_lock(manifest: Manifest, lock: Lock, *, write: bool,
@@ -378,8 +388,7 @@ def reconcile_lock(manifest: Manifest, lock: Lock, *, write: bool,
     if not allow_rewrite:
         raise StackError(
             f"{path} does not match the stack built from {manifest.path}.\n"
-            f"  committed branch_sha: {existing.get('branch_sha')}\n"
-            f"  rebuilt  branch_sha: {lock.branch_sha}\n"
+            f"{_describe_diff(existing, fresh)}"
             f"  Something the manifest points at moved. Re-pin it, or pass "
             f"--allow-rewrite if this tag was never published.")
 

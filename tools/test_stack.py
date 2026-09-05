@@ -453,3 +453,18 @@ class SkipFrozenTest(unittest.TestCase):
 
     def test_releasing_a_frozen_manifest_still_fails(self) -> None:
         self.assertEqual(stack.main([str(self._frozen_manifest()), "--dry-run"]), 1)
+
+
+class VersionStampTest(unittest.TestCase):
+    """The stamp must not depend on how large the clone happens to be."""
+
+    def test_abbreviation_is_pinned(self) -> None:
+        # git's default abbreviation grows with a repo's object count, so an
+        # unpinned describe stamps a fresh clone and a full one differently.
+        fx = Fixture()
+        self.addCleanup(fx.close)
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        lock = fx.build(fx.manifest(Path(tmp.name)))
+        suffix = lock.version_stamp.rsplit("-g", 1)[1]
+        self.assertEqual(len(suffix), 12, lock.version_stamp)
