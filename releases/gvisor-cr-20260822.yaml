@@ -1,0 +1,28 @@
+# Backfilled from the release that shipped on 2026-08-22. Frozen: published, and
+# a checkpoint is only readable by the exact build that wrote it.
+tag: gvisor-cr-20260822
+base: release-20260817.0
+supersedes: gvisor-cr-20260817
+frozen: true
+
+stack:
+  - pr: 13326
+    source: google/gvisor
+    why: Kubernetes pod checkpoint/restore via annotations
+    pick: [7a438259cb]
+    rebased:
+      # 7a438259cb predates upstream's own CreateWithFSRestore API and has
+      # never cherry-picked cleanly onto any release tag. b2995c8005 is that
+      # change adapted to the current API, kept on the fork.
+      ref: pr13326-pr14277-20260822
+      map:
+        7a438259cb: b2995c8005
+
+  - pr: 14277
+    source: google/gvisor
+    why: update the sentry CPU count on live cgroup CPU changes
+    pick:
+      - 7ef5634c92
+      - 5b5c876925
+      - c87c909826
+      - e8994c8136

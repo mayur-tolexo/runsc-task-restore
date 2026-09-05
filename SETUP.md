@@ -56,11 +56,11 @@ publish `gvisor-cr-<commit>-<arch>.tar` containing both binaries.
 release ships `runsc` + `containerd-shim-runsc-v1` for both arches, built from
 the `neev/pr13326-20260810` fork branch — upstream `release-20260810.0` plus
 PR #13326, no other patches, since the pod-shared `/workspace` overlay needs only
-pod annotations on a current release. To rebuild
-it yourself, the [`build-fork`](.github/workflows/build-fork.yml) workflow clones
-that branch (which already carries every change, no local patch step) and builds
-both binaries natively per arch; `build-cr-binaries.sh` above is the same builder
-it calls. See [docs/WORKSPACE-OVERLAY.md](docs/WORKSPACE-OVERLAY.md) for what the
+pod annotations on a current release. Releases are cut from a
+manifest — see [docs/RELEASING.md](docs/RELEASING.md). The
+[`release`](.github/workflows/release.yml) workflow combines the upstream pull
+requests the manifest names and builds both binaries natively per arch;
+`build-cr-binaries.sh` above is the same builder it calls. See [docs/WORKSPACE-OVERLAY.md](docs/WORKSPACE-OVERLAY.md) for what the
 overlay adds and a full verification run.
 
 ## 2. Distribute to every sandbox node

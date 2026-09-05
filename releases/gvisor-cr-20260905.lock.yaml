@@ -1,0 +1,40 @@
+tag: gvisor-cr-20260905
+base: release-20260824.0
+base_sha: 3c5eee17dc45659fb86843531074f38e78e0cc35
+branch: neev/cr-20260905
+branch_sha: 04c6dc24061f60df55af19e8f8afa6794cccae7d
+version_stamp: release-20260824.0-8-g04c6dc2406
+fork: mayur-tolexo/gvisor
+picked:
+- pr: 13326
+  upstream: 7a438259cb425e4c973ca789a5175eb7812c828b
+  applied: b2995c8005794a57432c45627f180bdc9b62b4b3
+  cherry: 5087c54207457e64ca19fca28a8ee8d4fb3324f4
+- pr: 14277
+  upstream: 7ef5634c922259ecf8869dbe5f0cedfe70263fd9
+  applied: 7ef5634c922259ecf8869dbe5f0cedfe70263fd9
+  cherry: debe328e16d1bfe4cc3d4ae65f3cc35c150f3894
+- pr: 14277
+  upstream: 5b5c876925cf8e1c45cff29407abc8a8d7d0127d
+  applied: 5b5c876925cf8e1c45cff29407abc8a8d7d0127d
+  cherry: 0998407f1660f668e59957ff380ce4606d1ebf75
+- pr: 14277
+  upstream: c87c909826fa687493028727ab5942f4e86c2f24
+  applied: c87c909826fa687493028727ab5942f4e86c2f24
+  cherry: a6db1fdeb23539ddc7e6a17a64c5c08ad023de40
+- pr: 14277
+  upstream: e8994c813647c9c2f56f73a91a9c5b176331fe5f
+  applied: e8994c813647c9c2f56f73a91a9c5b176331fe5f
+  cherry: 397b49ab05fadda4c33a9d979436273429551cfd
+- pr: 14072
+  upstream: 660192acfcf97361d1daa4dbb6fc07b7e9ab7a01
+  applied: 660192acfcf97361d1daa4dbb6fc07b7e9ab7a01
+  cherry: 39f824162057690d18932af0e99b5c8714b6456f
+- pr: 14072
+  upstream: 1f9cec32e316f2c8dfb798d78ecf51212158c182
+  applied: 1f9cec32e316f2c8dfb798d78ecf51212158c182
+  cherry: 56ad014d0f48ec1342e3a9c8c7b97321fa8c5558
+- pr: 14428
+  upstream: c04c9cbc2fb41b93b00d7948414a451b289ae96b
+  applied: c04c9cbc2fb41b93b00d7948414a451b289ae96b
+  cherry: 04c6dc24061f60df55af19e8f8afa6794cccae7d

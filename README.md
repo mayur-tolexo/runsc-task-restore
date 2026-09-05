@@ -78,15 +78,20 @@ diagrams in [docs/flows.md](docs/flows.md).
 
 ## Layout
 
-- **[Release `gvisor-cr-20260810`](https://github.com/mayur-tolexo/runsc-task-restore/releases/tag/gvisor-cr-20260810)** — current pair. `runsc` + `containerd-shim-runsc-v1` for linux/amd64 and linux/arm64, built by [`build-fork`](.github/workflows/build-fork.yml) from `neev/pr13326-20260810`: upstream `release-20260810.0` plus PR #13326 and nothing else. The shared-`/workspace` support it used to carry as local patches is upstream now.
+- **[Release `gvisor-cr-20260810`](https://github.com/mayur-tolexo/runsc-task-restore/releases/tag/gvisor-cr-20260810)** — current pair. `runsc` + `containerd-shim-runsc-v1` for linux/amd64 and linux/arm64, built from `neev/pr13326-20260810`: upstream `release-20260810.0` plus PR #13326 and nothing else. The shared-`/workspace` support it used to carry as local patches is upstream now.
 - **[Release `gvisor-cr-workspace-overlay`](https://github.com/mayur-tolexo/runsc-task-restore/releases/tag/gvisor-cr-workspace-overlay)** — superseded. Same capabilities on a `release-20260622.0` base, with the workspace overlay and the multi-container restore fix carried as local patches.
-- **[Release `gvisor-cr-pr13326`](https://github.com/mayur-tolexo/runsc-task-restore/releases/tag/gvisor-cr-pr13326)** — the earlier checkpoint/restore-only pair, built from gVisor PR head `2f05ec97` by the [`build-cr-binaries`](.github/workflows/build-cr-binaries.yml) workflow.
+- **[Release `gvisor-cr-pr13326`](https://github.com/mayur-tolexo/runsc-task-restore/releases/tag/gvisor-cr-pr13326)** — the earlier checkpoint/restore-only pair, built from gVisor PR head `2f05ec97`, before releases were manifest-driven.
 - [`NODE-SETUP.md`](NODE-SETUP.md) — what to configure on each sandbox node: install the binary pair from the release, containerd annotation passthrough, `runsc.toml`, the CephFS snapshot store, and a DaemonSet installer.
 - [`SETUP.md`](SETUP.md) — how to run upstream PR #13326 on a real Kubernetes cluster: build the shim + runsc, distribute to nodes, containerd config, the fork workflow, and productionization.
 - [`docs/CHECKPOINT-RESTORE.md`](docs/CHECKPOINT-RESTORE.md) — step-by-step runbook for the two primitives (checkpoint a running sandbox, restore/fork it) using the latest #13326 `dev.gvisor.internal.*` annotation contract.
 - [`docs/walkthrough.md`](docs/walkthrough.md) — full layer-by-layer walkthrough: kubelet → container start, gVisor internals, containerd & runsc checkpoint/restore, plus deep dives (async page loading, gofer re-establishment, netstack/sockets). All diagrams validated with mermaid-cli.
 - [`docs/HLD.md`](docs/HLD.md) — high-level design: layers, where the fix goes, the whole-sandbox restore state machine, ID-remap-by-name.
 - [`docs/flows.md`](docs/flows.md) — flow + sequence diagrams (checkpoint, whole-sandbox restore, working pod fork, one-to-many).
+- [`releases/`](releases/) — one manifest per release: the base tag and the
+  commits taken from each upstream pull request, with a lock file recording
+  exactly what was built. See [`docs/RELEASING.md`](docs/RELEASING.md).
+- [`tools/`](tools/) — `stack.py` builds a release's branch from its manifest;
+  `notes.py` renders its release notes.
 - [`patches/`](patches/) — the diff against upstream gVisor.
 - [`changes/`](changes/) — the four modified shim files, for reading.
 - [`examples/`](examples/) — source and fork pod manifests, plus the two-container shared-workspace pair (`ws-shared-pod.yaml`, `ws-shared-restore.yaml`).
