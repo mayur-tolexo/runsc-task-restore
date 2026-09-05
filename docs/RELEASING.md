@@ -87,11 +87,13 @@ if checkpointVersion != currentVersion {
 
 A mismatch fails the restore outright. Three consequences:
 
-- **Never recut a published release to correct its stamp.** The recut binary
-  would be byte-different in that string alone, and every checkpoint taken under
-  the original would stop restoring. A cosmetically wrong stamp is strictly
-  better than a broken one — it still names the right commit, and save and
-  restore agree because both come from the same binary.
+- **Never restamp a build that has written a checkpoint.** The recut binary
+  would differ in that string alone, and every checkpoint taken under the
+  original would stop restoring. The precondition is what matters: a build that
+  is in no playbook and named by no RuntimeClass has no checkpoints, and *can*
+  be restamped — that is how `gvisor-cr-20260831` was corrected before it was
+  adopted. Once a build is installed anywhere, a wrong stamp is strictly better
+  than a fixed one.
 - **Anything that changes `git describe` output changes checkpoint
   compatibility.** The pinned `--abbrev=12` and the upstream-tag fetch in the
   build job both feed it. Treat either as a compatibility-affecting change, not
@@ -99,10 +101,14 @@ A mismatch fails the restore outright. Three consequences:
 - **Freezing on publish pins this string, not just provenance.** That is the real
   reason a published manifest must never rebuild.
 
-`gvisor-cr-20260905` and `gvisor-cr-20260831` were built before the build job
-fetched upstream tags, so their binaries report an older base
-(`release-20260817.0-201-g...`) than their notes. They name the correct commit
-and restore correctly. Leave them.
+Both releases cut on 2026-09-05 were first built before the build job fetched
+upstream tags. `gvisor-cr-20260831` was restamped the same day, before anything
+ran on it, and now reports `release-20260831.0-8-geb8206d8b0ab` as its notes say.
+`gvisor-cr-20260905` **cannot** be: it pins the pre-rebase commits of an upstream
+pull request that was rebased that afternoon, so the exhaustiveness gate rejects
+any rebuild, and re-pinning would build different code. It reports
+`release-20260817.0-78-g04c6dc24061f`, names the correct commit, restores
+correctly, and is superseded. Leave it.
 
 ### A note on the version stamp
 
@@ -149,6 +155,11 @@ the manifest at it:
 The upstream commit stays pinned, so exhaustiveness is still checked against the
 upstream pull request and a moved pull request still fails. The lock records
 `upstream`, `applied` and `cherry` for every commit, so the chain is never lost.
+
+Renaming the adapted branch later breaks the manifest by name even though every
+commit survives — and a frozen release is never rebuilt, so it goes unnoticed
+until someone does. `stack-check` runs `tools/stack.py <manifest> --check-refs`
+over **every** manifest, frozen included, to catch exactly that.
 
 Resolve conflicts by preserving both sides unless you have a reason not to.
 Upstream often fixes the same bug differently; taking one side wholesale can
@@ -215,6 +226,7 @@ it.
 | both arches build before anything uploads | a half-uploaded release once dropped an arch from `SHA256SUMS` |
 | the release is a draft | a bad release is effectively permanent |
 | the base branch is never force-pushed | force would discard whatever moved it |
+| every `rebased.ref` exists on the fork, frozen manifests included | a renamed branch breaks a manifest by name, and frozen ones are never rebuilt so it would rot unnoticed |
 
 ## When it fails
 
