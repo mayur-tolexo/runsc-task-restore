@@ -57,6 +57,21 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "manifests: ${changed:-none}"
 
+      # Runs over every manifest, not just the changed ones: a frozen release is
+      # never rebuilt, so a ref renamed out from under it rots unnoticed until
+      # someone does rebuild.
+      - name: Check every manifest's rebased refs still exist
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          rc=0
+          for m in releases/*.yaml; do
+            case "$m" in *.lock.yaml) continue ;; esac
+            python3 tools/stack.py "$m" --check-refs || rc=1
+          done
+          exit $rc
+
       - name: Build each stack without pushing
         if: steps.changed.outputs.list != ''
         env:

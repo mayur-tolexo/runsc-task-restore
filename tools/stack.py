@@ -146,6 +146,31 @@ def parse_manifest(path: Path) -> Manifest:
                     frozen=bool(data.get("frozen", False)), path=path)
 
 
+def fork_url(fork: str) -> str:
+    """Git URL for a fork given as owner/name, or pass a URL or path through."""
+    if "://" in fork or fork.startswith("/") or fork.startswith("git@"):
+        return fork
+    return f"https://github.com/{fork}.git"
+
+
+def check_rebased_refs(manifest: Manifest, fork: str) -> list[str]:
+    """Report every `rebased.ref` in this manifest that no longer exists on the fork.
+
+    Runs even on a frozen manifest. A frozen release is never rebuilt, so a ref
+    renamed out from under it goes unnoticed until someone does rebuild -- which is
+    exactly when they can least afford a surprise.
+    """
+    url = fork_url(fork)
+    missing = []
+    for entry in manifest.stack:
+        if not entry.rebased:
+            continue
+        ref = entry.rebased["ref"]
+        if not run(["git", "ls-remote", url, f"refs/heads/{ref}"]):
+            missing.append(f"PR {entry.pr}: rebased.ref {ref} does not exist on {fork}")
+    return missing
+
+
 def gh_pr_commits(source: str, pr: int) -> list[str]:
     """Return the commit SHAs on a pull request head, in the PR's own order.
 
@@ -171,7 +196,7 @@ def fetch_rebased_ref(repo: str, entry: Entry, fork: str) -> str:
     so a release stays rebuildable from remotes alone.
     """
     ref = f"refs/neev-stack/rebased-pr{entry.pr}"
-    git(repo, "fetch", "--quiet", f"https://github.com/{fork}.git",
+    git(repo, "fetch", "--quiet", fork_url(fork),
         f"+refs/heads/{entry.rebased['ref']}:{ref}")
     return ref
 
@@ -501,7 +526,7 @@ def push_and_review(manifest: Manifest, lock: Lock, repo: str,
     not ship and drags their workflow-file changes into the push, which GitHub
     rejects unless the token may write workflows.
     """
-    url = f"https://github.com/{fork}.git"
+    url = fork_url(fork)
 
     ensure_base_branch(repo, url, manifest, lock)
     for index, entry in enumerate(manifest.stack, start=1):
@@ -570,10 +595,19 @@ def main(argv: list[str] | None = None) -> int:
                     help="permit a lock mismatch (unpublished tags only)")
     ap.add_argument("--skip-frozen", action="store_true",
                     help="treat a frozen manifest as nothing to do, not an error")
+    ap.add_argument("--check-refs", action="store_true",
+                    help="only verify this manifest's rebased refs still exist")
     args = ap.parse_args(argv)
 
     try:
         manifest = parse_manifest(args.manifest)
+        # Checked before the frozen gate: a frozen manifest is precisely the one
+        # whose refs rot unnoticed.
+        if args.check_refs:
+            missing = check_rebased_refs(manifest, args.fork)
+            for line in missing:
+                print(f"error: {line}", file=sys.stderr)
+            return 1 if missing else 0
         # A frozen manifest is a record of a published build. Checking a batch
         # of manifests should step over it; releasing one must still fail.
         if manifest.frozen and args.skip_frozen:
