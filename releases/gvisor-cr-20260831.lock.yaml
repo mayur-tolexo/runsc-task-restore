@@ -2,8 +2,8 @@ tag: gvisor-cr-20260831
 base: release-20260831.0
 base_sha: fd2f6b2674208086e324c2f739155eb7e1b48ff2
 branch: neev/cr-20260831
-branch_sha: eb8206d8b0ab1d84bdfdd372c5318d57adc7be75
-version_stamp: release-20260831.0-8-geb8206d8b0ab
+branch_sha: 0071320f837d60e722728122481ba92c8e6a44f6
+version_stamp: release-20260831.0-10-g0071320f837d
 fork: mayur-tolexo/gvisor
 picked:
 - pr: 13326
@@ -38,3 +38,11 @@ picked:
   upstream: c04c9cbc2fb41b93b00d7948414a451b289ae96b
   applied: 1562639f911c88fb077343e92dc4e15c36a40746
   cherry: eb8206d8b0ab1d84bdfdd372c5318d57adc7be75
+- pr: 8
+  upstream: 1333538b40115b4852b87612873219c1eb9ddcbc
+  applied: 1333538b40115b4852b87612873219c1eb9ddcbc
+  cherry: 68fe9b32bafc64518034487f05915765bda9b019
+- pr: 8
+  upstream: 3bd111af8b868c7aebace11987d89e6f0d479a4d
+  applied: 3bd111af8b868c7aebace11987d89e6f0d479a4d
+  cherry: 0071320f837d60e722728122481ba92c8e6a44f6

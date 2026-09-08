@@ -4,6 +4,10 @@ supersedes: gvisor-cr-20260905
 # Published 2026-09-05, restamped the same day: the first build reported
 # release-20260817.0-201-geb8206d8b0ab because the build job did not yet fetch
 # upstream's tags. Nothing had ever run on it, so no checkpoint could break.
+# Restamped again 2026-09-08 to add the filesystem and background restore
+# annotations. Safe on the same test: no snapshot in any environment was written
+# by this build -- every stored one carries runsc-20260822 or no runtime class at
+# all, and no sandbox has ever run under it.
 # Frozen: from here the binaries are adoptable and a checkpoint is only readable
 # by the build that wrote it.
 frozen: true
@@ -54,6 +58,13 @@ stack:
       map:
         c04c9cbc2f: 1562639f91
 
+  - pr: 8
+    source: mayur-tolexo/gvisor
+    why: reach the restore flags a pod cannot set from a pod annotation
+    pick:
+      - 1333538b40
+      - 3bd111af8b
+
 notes: |
   What changed since gvisor-cr-20260905
 
@@ -62,3 +73,11 @@ notes: |
   upstream code that moved: the checkpoint/restore shim change, and the shim io
   drain fix, which upstream had independently patched at one of the same call
   sites.
+
+  Restamp 2026-09-08
+
+  Adds the pod annotations for two restore behaviours runsc already implements
+  but a pod could not ask for: dev.gvisor.internal.restore.fs-image-path with
+  .fs-direct, which restore a container filesystem from an fscheckpoint image at
+  sandbox creation, and dev.gvisor.internal.restore.background, which lets a
+  memory restore stream its pages in behind the running application.
