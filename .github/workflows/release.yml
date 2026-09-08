@@ -15,6 +15,10 @@ on:
       manifest:
         description: "Manifest to release, e.g. releases/gvisor-cr-20260905.yaml"
         required: true
+      allow_rewrite:
+        description: "Rebuild a frozen manifest, replacing the binaries its tag already published"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -41,6 +45,7 @@ jobs:
         id: pick
         env:
           INPUT_MANIFEST: ${{ inputs.manifest }}
+          ALLOW_REWRITE: ${{ inputs.allow_rewrite }}
           BEFORE: ${{ github.event.before }}
         run: |
           set -euo pipefail
@@ -54,9 +59,15 @@ jobs:
               -- 'releases/*.yaml' | grep -v '\.lock\.yaml$')"
           fi
           # A commit may touch only frozen manifests -- the backfill commit does.
-          # That is a no-op, not a failure.
+          # That is a no-op, not a failure. A dispatch asking to rewrite one is
+          # the deliberate exception: restamping a published tag.
           releasable=""
           for m in $manifest; do
+            if [ "${ALLOW_REWRITE:-false}" = "true" ]; then
+              echo "rewriting $m on request"
+              releasable="$m"
+              break
+            fi
             if python3 -c "import sys,yaml; sys.exit(0 if yaml.safe_load(open(sys.argv[1])).get('frozen') else 1)" "$m"; then
               echo "skipping frozen $m"
             else
@@ -81,9 +92,16 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GVISOR_FORK_TOKEN }}
           MANIFEST: ${{ steps.pick.outputs.manifest }}
+          ALLOW_REWRITE: ${{ inputs.allow_rewrite }}
         run: |
           set -euo pipefail
-          python3 tools/stack.py "$MANIFEST" | tee /tmp/stack.json
+          # stack.py refuses a frozen manifest without this, which is the guard a
+          # restamp has to step over on purpose.
+          set -- "$MANIFEST"
+          if [ "${ALLOW_REWRITE:-false}" = "true" ]; then
+            set -- "$@" --allow-rewrite
+          fi
+          python3 tools/stack.py "$@" | tee /tmp/stack.json
           python3 - <<'PY' >> "$GITHUB_OUTPUT"
           import json
           result = json.load(open("/tmp/stack.json"))
