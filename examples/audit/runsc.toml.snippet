@@ -1,0 +1,9 @@
+# Add to the node's runsc runtime config TOML (the file the containerd runsc
+# runtime points at via ConfigPath, e.g. /etc/containerd/runsc.toml). This is
+# the SAME [runsc_config] table already used to set debug/debug-log — no runsc
+# or shim source change. Keys under [runsc_config] become runsc --<key>=<value>
+# flags on every invocation, including `runsc restore`, which is what carries
+# the audit session across checkpoint/restore.
+
+[runsc_config]
+  pod-init-config = "/run/gvisor-audit/pod_init.json"

@@ -1,0 +1,25 @@
+{
+  "trace_session": {
+    "name": "Default",
+    "points": [
+      { "name": "container/start", "context_fields": ["container_id", "credentials", "cwd"] },
+      { "name": "sentry/execve", "context_fields": ["container_id", "thread_id", "process_name"] },
+      { "name": "sentry/clone", "context_fields": ["container_id", "thread_id"] },
+      { "name": "sentry/task_exit", "context_fields": ["container_id", "thread_id"] },
+      { "name": "syscall/openat/enter", "optional_fields": ["fd_path"], "context_fields": ["container_id", "thread_id"] },
+      { "name": "syscall/connect/enter", "optional_fields": ["fd_path"], "context_fields": ["container_id", "thread_id"] }
+    ],
+    "sinks": [
+      {
+        "name": "remote",
+        "config": {
+          "endpoint": "/run/gvisor-audit/events.sock",
+          "retries": 3,
+          "backoff": "25us",
+          "backoff_max": "10ms"
+        },
+        "ignore_setup_error": false
+      }
+    ]
+  }
+}
