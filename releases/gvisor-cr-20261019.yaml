@@ -18,7 +18,7 @@ stack:
   - pr: 14277
     source: google/gvisor
     why: update the sentry CPU count on live cgroup CPU changes
-    pick: [815bb595aa]
+    pick: [495b1d558f]
 
   - pr: 14428
     source: google/gvisor
@@ -32,7 +32,7 @@ stack:
       # exported the exit code as InternalErrorCode.
       ref: neev/adapted/release-20261019.0
       map:
-        c04c9cbc2f: 0d22fac4ae
+        c04c9cbc2f: c645c969a5
 
   - pr: 8
     source: mayur-tolexo/gvisor
@@ -44,10 +44,28 @@ stack:
       # Only the placement of the CreateWithFSRestore doc comment conflicted.
       ref: neev/adapted/release-20261019.0
       map:
-        1333538b40: 2db7c926a6
+        1333538b40: 3c2daa464e
+
+  - pr: 14410
+    source: google/gvisor
+    why: update the sentry total memory on live cgroup memory limit changes
+    pick: [8ea96e3ec0]
+    rebased:
+      # Overlaps the CPU resize change in the same files; both kept.
+      ref: neev/adapted/release-20261019.0
+      map:
+        8ea96e3ec0: 5fd3fc1a2b
 
 notes: |
   What changed since gvisor-cr-20260831
 
   Rebased onto release-20261019.0. The nil ThreadGroup fix for joining a PID
   namespace is now in upstream, so it is no longer carried here.
+
+  Adds live memory resize: an in-place pod resize now shows up in
+  /proc/meminfo without a restart. CPU resize now also reaches processes that
+  were already running.
+
+  runsc now runs its sentry and helpers from a gvisor-bin/ directory next to
+  the runsc binary. Install gvisor-bin-linux-<arch>.tar.gz there, or sandboxes
+  fail to start.

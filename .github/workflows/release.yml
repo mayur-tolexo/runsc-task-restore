@@ -164,12 +164,18 @@ jobs:
           cd out
           mv runsc "runsc-linux-${{ matrix.arch }}"
           mv containerd-shim-runsc-v1 "containerd-shim-runsc-v1-linux-${{ matrix.arch }}"
+          # Fixed metadata so the tarball's checksum depends only on its contents.
+          tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
+            -cf - gvisor-bin | gzip -n > "gvisor-bin-linux-${{ matrix.arch }}.tar.gz"
           file runsc-linux-* containerd-shim-runsc-v1-linux-*
+          tar -tzvf "gvisor-bin-linux-${{ matrix.arch }}.tar.gz"
 
       - uses: actions/upload-artifact@v4
         with:
           name: binaries-${{ matrix.arch }}
-          path: out/*-linux-${{ matrix.arch }}
+          path: |
+            out/*-linux-${{ matrix.arch }}
+            out/*-linux-${{ matrix.arch }}.tar.gz
           if-no-files-found: error
 
   publish:
@@ -199,7 +205,8 @@ jobs:
           # arch whenever one upload was missing.
           sha256sum runsc-linux-amd64 runsc-linux-arm64 \
             containerd-shim-runsc-v1-linux-amd64 \
-            containerd-shim-runsc-v1-linux-arm64 | tee SHA256SUMS
+            containerd-shim-runsc-v1-linux-arm64 \
+            gvisor-bin-linux-amd64.tar.gz gvisor-bin-linux-arm64.tar.gz | tee SHA256SUMS
 
       - name: Generate release notes
         env:
@@ -223,6 +230,7 @@ jobs:
             out/runsc-linux-amd64 out/runsc-linux-arm64 \
             out/containerd-shim-runsc-v1-linux-amd64 \
             out/containerd-shim-runsc-v1-linux-arm64 \
+            out/gvisor-bin-linux-amd64.tar.gz out/gvisor-bin-linux-arm64.tar.gz \
             out/SHA256SUMS
           {
             echo "### draft release \`$TAG\`"
