@@ -1,0 +1,28 @@
+tag: gvisor-cr-20261019
+base: release-20261019.0
+base_sha: 760b80785dc53311d4c87bd2de167525a99709c1
+branch: neev/cr-20261019
+branch_sha: 220f3e7d89717daa654e5048df32f469e0f43fcd
+version_stamp: release-20261019.0-5-g220f3e7d8971
+fork: mayur-tolexo/gvisor
+picked:
+- pr: 13326
+  upstream: 7a438259cb425e4c973ca789a5175eb7812c828b
+  applied: 30a9973800464540f91f7342d93e9e57235c0eb4
+  cherry: 3952c31b8e072996d4e2d47e251e58ee4774d2b9
+- pr: 14277
+  upstream: 815bb595aaecd38abe0f34ec6b489e53f194d288
+  applied: 815bb595aaecd38abe0f34ec6b489e53f194d288
+  cherry: b25270509244b7da86eb603481a50934bc937109
+- pr: 14428
+  upstream: c04c9cbc2fb41b93b00d7948414a451b289ae96b
+  applied: 0d22fac4aea477d43152f95bbf52a2857d684d69
+  cherry: 70304658cde386e8ce67dfa5628c14200d60eb3a
+- pr: 8
+  upstream: 1333538b40115b4852b87612873219c1eb9ddcbc
+  applied: 2db7c926a6a68b7bb2bc5bc2e3b0122bc5453c29
+  cherry: 59ddeb000f9da927686ceea322c93686468f7f19
+- pr: 8
+  upstream: 3bd111af8b868c7aebace11987d89e6f0d479a4d
+  applied: 3bd111af8b868c7aebace11987d89e6f0d479a4d
+  cherry: 220f3e7d89717daa654e5048df32f469e0f43fcd
