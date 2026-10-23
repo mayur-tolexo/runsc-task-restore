@@ -1,6 +1,8 @@
 tag: gvisor-cr-20261019
 base: release-20261019.0
 supersedes: gvisor-cr-20260831
+# Published 2026-10-23. Frozen: a checkpoint is only readable by the build that wrote it.
+frozen: true
 
 stack:
   - pr: 13326
