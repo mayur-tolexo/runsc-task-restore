@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Build BOTH the patched shim and the matching runsc from a gVisor checkout that
-# has PR #13326 applied. Ships them as a pair (the shim shells out to
-# `runsc checkpoint`/`runsc restore`, so versions must match). Extracts from the
-# bazel cache because `make copy` trips on a long xargs line.
+# Build the patched shim, the matching runsc and its gvisor-bin/ sidecars from a
+# gVisor checkout. They ship as a set: the shim shells out to runsc, and runsc
+# refuses sidecars from another build. Extracts from the bazel cache because
+# `make copy` trips on a long xargs line.
 #
 # Target architecture is controlled by ARCH (gVisor's own convention):
 #   ARCH=x86_64   -> linux/amd64
@@ -33,55 +33,40 @@ esac
 mkdir -p "$OUT"
 cd "$GVISOR_SRC"
 
-echo "== building //shim:containerd-shim-runsc-v1 and //runsc:runsc for ARCH=$ARCH (host=$host_arch) =="
-make ARCH="$ARCH" copy TARGETS=//shim:containerd-shim-runsc-v1 DESTINATION="$OUT" || true
-make ARCH="$ARCH" copy TARGETS=//runsc:runsc                   DESTINATION="$OUT" || true
+echo "== building //:release for ARCH=$ARCH (host=$host_arch) =="
+# //:release is the installed layout: runsc, the shim and gvisor-bin/.
+# Native builds leave ARCH unset: gVisor passes it to docker --platform, which
+# rejects the aarch64 spelling.
+make_args=(build TARGETS=//:release)
+[[ "$ARCH" == "$host_arch" ]] || make_args+=(ARCH="$ARCH")
+# The Makefile's post-build step fails on macOS bash, so trust bazel's verdict.
+make "${make_args[@]}" 2>&1 | tee "$OUT/.build.log" || true
+grep -q 'Target //:release up-to-date' "$OUT/.build.log" || { echo "ERROR: //:release did not build"; exit 1; }
+rm -f "$OUT/.build.log"
 
-# If `make copy` did not place the binaries (it trips on a long xargs line), pull
-# them straight out of the bazel cache. macOS keeps the cache in a Docker volume
-# (gvisor-bazel-cache-<hash>-<ARCH>); Linux keeps it on a host path
-# ($HOME/.cache/bazel). Handle both. Match the binary by name anywhere under a
-# bin/ dir and pick the largest hit — rules_go nests the real binary under a
-# <name>_/ dir, and -type f skips the convenience symlink.
-VOL="$(docker volume ls --format '{{.Name}}' | grep "^gvisor-bazel-cache.*-$ARCH$" | head -1 || true)"
-[[ -n "$VOL" ]] || VOL="$(docker volume ls --format '{{.Name}}' | grep '^gvisor-bazel-cache' | head -1 || true)"
+# macOS keeps the bazel cache in Docker volumes, Linux on the host. Either may
+# hold older builds, so take the newest release/runsc.
+case "$ARCH" in x86_64) VOL_ARCH=amd64 ;; aarch64) VOL_ARCH=arm64 ;; esac
 HOST_CACHE="${BAZEL_CACHE:-$HOME/.cache/bazel}"
-
-# pick_largest <root> <name>: print the largest regular file named <name> under a
-# bin/ dir in <root>. Uses a wc -c loop (no `head`) so a SIGPIPE under pipefail
-# can never abort the script mid-extract.
-pick_largest() {
-  local root="$1" name="$2" best="" bestsz=-1 f sz
-  while IFS= read -r f; do
-    sz="$(wc -c <"$f" 2>/dev/null || echo 0)"
-    if [ "$sz" -gt "$bestsz" ]; then bestsz="$sz"; best="$f"; fi
-  done < <(find "$root" -type f -name "$name" -path '*/bin/*' 2>/dev/null)
-  printf '%s' "$best"
-}
-
-extract() { # <bin-name>
-  local name="$1"
-  [[ -f "$OUT/$name" ]] && return 0
-  # macOS: search/copy from the cache volume via a throwaway container.
-  if [[ -n "$VOL" ]]; then
-    local p
-    p="$(docker run --rm -v "$VOL":/cache alpine \
-          sh -c "find /cache -type f -name '$name' -path '*/bin/*' 2>/dev/null | xargs -r ls -S 2>/dev/null | head -1 || true")"
-    if [[ -n "$p" ]]; then
-      docker run --rm -v "$VOL":/cache -v "$OUT":/out alpine \
-        sh -c "cp '$p' /out/$name && chmod +x /out/$name"
-      return 0
-    fi
-  fi
-  # Linux: search the on-disk bazel cache directly.
-  local hp
-  hp="$(pick_largest "$HOST_CACHE" "$name")"
-  [[ -n "$hp" ]] || { echo "ERROR: $name not found in bazel cache (vol=$VOL dir=$HOST_CACHE)"; exit 1; }
-  cp "$hp" "$OUT/$name" && chmod +x "$OUT/$name"
-}
-extract runsc
-extract containerd-shim-runsc-v1
+best=""
+for vol in $(docker volume ls --format '{{.Name}}' | grep "^gvisor-bazel-cache.*-$VOL_ARCH$" || true); do
+  hit="$(docker run --rm -v "$vol":/cache alpine sh -c \
+    'find /cache -type f -path "*/bin/release/runsc" -exec stat -c "%Y %n" {} +' || true)"
+  [[ -n "$hit" ]] && best+="$(printf '%s\n' "$hit" | sed "s|\$| $vol|")"$'\n'
+done
+if [[ -n "$best" ]]; then
+  read -r _ runsc vol < <(printf '%s' "$best" | sort -n | tail -1)
+  docker run --rm -v "$vol":/cache -v "$OUT":/out alpine \
+    sh -c "cp -rL '$(dirname "$runsc")'/. /out/ && chmod -R a+rx /out"
+else
+  runsc="$(find "$HOST_CACHE" -type f -path '*/bin/release/runsc' -printf '%T@ %p\n' | sort -n | tail -1 | cut -d' ' -f2-)"
+  [[ -n "$runsc" ]] || { echo "ERROR: release/runsc not found under $HOST_CACHE"; exit 1; }
+  cp -rL "$(dirname "$runsc")"/. "$OUT"/
+fi
+for f in runsc containerd-shim-runsc-v1 gvisor-bin/gvisor_sentry; do
+  [[ -x "$OUT/$f" ]] || { echo "ERROR: $OUT/$f missing from the release layout"; exit 1; }
+done
 
 echo "== artifacts (ARCH=$ARCH) =="
-( cd "$OUT" && sha256sum runsc containerd-shim-runsc-v1 && file runsc containerd-shim-runsc-v1 )
+( cd "$OUT" && find . -type f | sort | xargs sha256sum && file runsc containerd-shim-runsc-v1 )
 echo "pinned gVisor commit: $(git -C "$GVISOR_SRC" rev-parse HEAD)"

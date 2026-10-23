@@ -118,6 +118,14 @@ upstream's release tags — the fork alone does not carry them. The build job
 fetches them; if a stamp ever reports an older base than the notes, that fetch is
 what went missing.
 
+### Installing gvisor-bin
+
+From release-20261019.0, runsc runs its sentry from a `gvisor-bin/` directory
+next to its resolved path, and refuses one from another build. Unpack
+`gvisor-bin-linux-<arch>.tar.gz` into a per-build directory beside that build's
+runsc and symlink runsc into `PATH`. A shared `/usr/local/bin/gvisor-bin`
+breaks every other installed build.
+
 ## Manifest reference
 
 | Field | Meaning |
