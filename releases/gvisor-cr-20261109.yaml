@@ -1,0 +1,95 @@
+tag: gvisor-cr-20261109
+base: release-20261109.0
+supersedes: gvisor-cr-20261019
+
+stack:
+  - pr: 13326
+    source: google/gvisor
+    why: Kubernetes pod checkpoint/restore via annotations
+    pick: [7a438259cb]
+    rebased:
+      # Upstream now takes the shim lock only around the container map insert,
+      # not across container creation. The annotation parsing touches only this
+      # container's bundle, so it runs unlocked and the restore fields are set
+      # before the container is published. Also fixes the shim e2e test's restore
+      # annotation, which never matched, so that test only cold-booted.
+      ref: neev/adapted/release-20261109.0
+      map:
+        7a438259cb: 217d446a09
+
+  - pr: 14277
+    source: google/gvisor
+    why: update the sentry CPU count on live cgroup CPU changes
+    pick: [495b1d558f]
+    rebased:
+      # Upstream reworked CPU sizing around sandbox CPU limits (application,
+      # creation and lifecycle phases). Reuses its cgroupCPUNum, splits the quota
+      # clamp out of its calculateCPUNum, and falls back to the application limit
+      # rather than whichever phase limit the cgroup holds right now.
+      ref: neev/adapted/release-20261109.0
+      map:
+        495b1d558f: 1d826fcc27
+
+  - pr: 14428
+    source: google/gvisor
+    why: release stdio when a created container stops
+    pick: [c04c9cbc2f]
+    skip:
+      - 91b6d56014  # merge of master into the branch, not a change
+    rebased:
+      # Upstream now bounds the delete drain with the runtime deadline, so the
+      # waitTimeout half is dropped. Kept: closing a never-started sub-container's
+      # stdio on the way to stopped and before a delete from created, which
+      # otherwise runs out that deadline and fails the first delete. Narrowed to
+      # sub-containers, so the sandbox's last output is not lost.
+      ref: neev/adapted/release-20261109.0
+      map:
+        c04c9cbc2f: d35351931f
+
+  - pr: 8
+    source: mayur-tolexo/gvisor
+    why: reach the restore flags a pod cannot set from a pod annotation
+    pick:
+      - 1333538b40
+      - 3bd111af8b
+    rebased:
+      # runsc restore now defaults to --background. Without the background
+      # annotation the shim passes --background=false, so annotation-driven
+      # restores stay eager as before; containerd's own restore keeps upstream's
+      # default. --direct is now --direct-io=on.
+      ref: neev/adapted/release-20261109.0
+      map:
+        1333538b40: bfbd3cf173
+        3bd111af8b: 9fbf31ade0
+
+  - pr: 14410
+    source: google/gvisor
+    why: update the sentry total memory on live cgroup memory limit changes
+    pick: [8ea96e3ec0]
+    rebased:
+      # Container.Update now runs inside modify; the memory push follows the CPU
+      # push there.
+      ref: neev/adapted/release-20261109.0
+      map:
+        8ea96e3ec0: dc5e2f4541
+
+notes: |
+  What changed since gvisor-cr-20261019
+
+  Rebased onto release-20261109.0, which brings upstream's restore work:
+  clocks that stay monotonic across restore, a working VDSO on resume,
+  half-closed TCP sockets kept readable, empty mount tables preserved, and
+  the shim no longer holding its lock across container creation. The shim
+  also now bounds its runtime waits itself.
+
+  Restores driven by the pod annotations still load all pages before the
+  restore returns, as before. runsc restore defaults to background loading
+  from this base; set dev.gvisor.internal.restore.background=true on the pod
+  to get it, and keep the checkpoint image readable until loading finishes.
+
+  After a live CPU grow, checkpoint and restore still size their helper
+  threads from the boot-time CPU count. This only affects how fast they run.
+
+  As with gvisor-cr-20261019, install gvisor-bin-linux-<arch>.tar.gz into a
+  gvisor-bin/ directory next to this build's runsc, per build, or sandboxes
+  fail to start.
